@@ -7,6 +7,7 @@ import { envValidationSchema } from '../config/env.validation';
 import { DatabaseModule } from '../database/database.module';
 import { RedisModule } from '../redis/redis.module';
 import { HealthController } from '../health/health.controller';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { HealthController } from '../health/health.controller';
     }),
     DatabaseModule,
     RedisModule,
+    AuthModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],

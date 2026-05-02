@@ -25,4 +25,10 @@ export const envValidationSchema = Joi.object({
 
   // Logging
   LOG_LEVEL: Joi.string().valid('fatal', 'error', 'warn', 'info', 'debug', 'trace').default('info'),
+
+  // JWT
+  JWT_ACCESS_SECRET: Joi.string().min(32).required(),
+  JWT_REFRESH_SECRET: Joi.string().min(32).required(),
+  JWT_ACCESS_TTL: Joi.number().integer().positive().required(),
+  JWT_REFRESH_TTL: Joi.number().integer().positive().required(),
 });
