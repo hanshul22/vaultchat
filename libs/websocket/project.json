@@ -1,0 +1,9 @@
+{
+  "name": "websocket",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/websocket/src",
+  "projectType": "library",
+  "tags": ["type:util", "scope:infra"],
+  "// targets": "to see all targets run: nx show project websocket --web",
+  "targets": {}
+}

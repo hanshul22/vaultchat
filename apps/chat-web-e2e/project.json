@@ -1,0 +1,10 @@
+{
+  "name": "chat-web-e2e",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/chat-web-e2e/src",
+  "implicitDependencies": ["chat-web"],
+  "tags": ["type:e2e", "scope:web-chat"],
+  "// targets": "to see all targets run: nx show project chat-web-e2e --web",
+  "targets": {}
+}

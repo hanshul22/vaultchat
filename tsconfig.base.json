@@ -1,0 +1,47 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": false,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "es2022",
+    "module": "esnext",
+    "lib": ["es2022", "dom"],
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
+    "baseUrl": ".",
+
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "alwaysStrict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitThis": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+
+    "paths": {
+      "@chat-media/shared": ["libs/shared/src/index.ts"],
+      "@chat-media/auth": ["libs/auth/src/index.ts"],
+      "@chat-media/users": ["libs/users/src/index.ts"],
+      "@chat-media/chat": ["libs/chat/src/index.ts"],
+      "@chat-media/media": ["libs/media/src/index.ts"],
+      "@chat-media/albums": ["libs/albums/src/index.ts"],
+      "@chat-media/storage": ["libs/storage/src/index.ts"],
+      "@chat-media/websocket": ["libs/websocket/src/index.ts"],
+      "@chat-media/cloudinary": ["libs/cloudinary/src/index.ts"],
+      "@chat-media/infra": ["libs/infra/src/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "tmp"]
+}

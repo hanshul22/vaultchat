@@ -1,0 +1,9 @@
+{
+  "name": "media",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/media/src",
+  "projectType": "library",
+  "tags": ["type:util", "scope:domain"],
+  "// targets": "to see all targets run: nx show project media --web",
+  "targets": {}
+}
