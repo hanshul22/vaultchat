@@ -1,6 +1,31 @@
 import { ConfigService } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import type { DatabaseConfig } from '../config/configuration';
+import { User } from '../users/entities/user.entity';
+import { CloudinaryAccount } from '../cloudinary-accounts/entities/cloudinary-account.entity';
+import { Media } from '../media/entities/media.entity';
+import { Album } from '../albums/entities/album.entity';
+import { AlbumMedia } from '../albums/entities/album-media.entity';
+import { StorageSpace } from '../storage-spaces/entities/storage-space.entity';
+import { StorageMember } from '../storage-spaces/entities/storage-member.entity';
+import { Conversation } from '../conversations/entities/conversation.entity';
+import { ConversationMember } from '../conversations/entities/conversation-member.entity';
+import { Message } from '../messages/entities/message.entity';
+import { MessageMedia } from '../messages/entities/message-media.entity';
+
+export const ALL_ENTITIES = [
+  User,
+  CloudinaryAccount,
+  Media,
+  Album,
+  AlbumMedia,
+  StorageSpace,
+  StorageMember,
+  Conversation,
+  ConversationMember,
+  Message,
+  MessageMedia,
+];
 
 export const buildTypeOrmConfig = (
   configService: ConfigService,
@@ -19,22 +44,10 @@ export const buildTypeOrmConfig = (
     password: db.password,
     database: db.database,
     ssl: db.ssl ? { rejectUnauthorized: false } : false,
-
-    // Entity discovery — we'll create the `entities` folder in Step 7.
-    // The glob picks up every `*.entity.ts` (dev) or `*.entity.js` (prod build).
-    entities: [__dirname + '/../**/*.entity.{ts,js}'],
-
-    // Migrations — we'll create real ones in Step 8.
+    entities: ALL_ENTITIES,
     migrations: [__dirname + '/migrations/*.{ts,js}'],
     migrationsTableName: 'typeorm_migrations',
-
-    // Never auto-sync schema. Always use migrations.
     synchronize: false,
-
-    // Log only errors by default. Bump to ['query', 'error'] when debugging.
     logging: ['error', 'warn'],
-
-    // Auto-load entities registered via `TypeOrmModule.forFeature([...])`.
-    autoLoadEntities: true,
   };
 };
