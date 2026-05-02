@@ -1,14 +1,14 @@
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+
 # compiled output
 dist
 tmp
 out-tsc
+.env
+.env.example
 
 # dependencies
 node_modules
-
-# environment — never commit real secrets
-.env
-*.env.local
 
 # IDEs and editors
 /.idea
@@ -40,21 +40,9 @@ testem.log
 .DS_Store
 Thumbs.db
 
-# Nx
 .nx/cache
 .nx/workspace-data
-
-# Angular
-.angular
-
-# Claude
 .claude/worktrees
 .claude/settings.local.json
 
-# Temp / diagnostic files
-*.err
-boot.log
-
-# Lock files for package managers not in use
-pnpm-lock.yaml
-yarn.lock
+.angular
