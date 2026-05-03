@@ -1,13 +1,5 @@
-import {
-  Body,
-  Controller,
-  HttpCode,
-  HttpStatus,
-  Post,
-  Req,
-  Res,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post, Req, Res, UseGuards } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { SignupDto } from './dto/signup.dto';
@@ -15,10 +7,11 @@ import { LoginDto } from './dto/login.dto';
 import { UserResponseDto } from '../users/dto/user-response.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
+@UseGuards(ThrottlerGuard)
 @Controller('v1/auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
-
+  @Throttle({ short: { ttl: 600000, limit: 5 } })
   @Post('signup')
   async signup(
     @Body() dto: SignupDto,
@@ -26,7 +19,7 @@ export class AuthController {
   ): Promise<{ accessToken: string; user: UserResponseDto }> {
     return this.authService.signup(dto, res);
   }
-
+  @Throttle({ short: { ttl: 600000, limit: 5 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
@@ -48,15 +41,14 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
-  async logout(
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<void> {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<void> {
     const user = req.user as { id: string };
-    const authHeader = typeof req.headers['authorization'] === 'string' ? req.headers['authorization'] : (req.headers['authorization']?.[0] ?? '');
+    const authHeader =
+      typeof req.headers['authorization'] === 'string'
+        ? req.headers['authorization']
+        : (req.headers['authorization']?.[0] ?? '');
     const token = authHeader.replace('Bearer ', '');
     await this.authService.logout(user.id, token);
     res.clearCookie('refresh_token', { path: '/api/v1/auth/refresh' });
   }
 }
-

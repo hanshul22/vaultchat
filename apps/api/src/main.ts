@@ -1,5 +1,6 @@
 import { setDefaultAutoSelectFamily } from 'node:net';
 setDefaultAutoSelectFamily(false);
+import { Logger, ValidationPipe } from '@nestjs/common';
 
 process.on('unhandledRejection', (reason) => {
   console.error('--- UNHANDLED REJECTION ---');
@@ -17,7 +18,6 @@ process.on('unhandledRejection', (reason) => {
  * This is only a minimal backend to get started.
  */
 
-import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app/app.module';
 import cookieParser from 'cookie-parser';
@@ -25,6 +25,13 @@ import cookieParser from 'cookie-parser';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(cookieParser());
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
   const globalPrefix = 'api';
   app.setGlobalPrefix(globalPrefix);
   const port = process.env.PORT || 3000;
