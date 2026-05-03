@@ -50,6 +50,9 @@ export class User {
   @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz', nullable: true })
   deletedAt!: Date | null;
 
+  @Column({ name: 'refresh_token_hash', type: 'varchar', length: 255, nullable: true })
+  refreshTokenHash!: string | null;
+
   @OneToMany(() => CloudinaryAccount, (account) => account.user)
   cloudinaryAccounts!: CloudinaryAccount[];
 
