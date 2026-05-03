@@ -12,6 +12,26 @@ export class UsersService {
     private readonly userRepo: Repository<User>,
   ) {}
 
+  async saveRefreshToken(userId: string, rawToken: string): Promise<void> {
+    const hash = await argon2.hash(rawToken, {
+      type: argon2.argon2id,
+      memoryCost: 19456,
+      timeCost: 2,
+      parallelism: 1,
+    });
+    await this.userRepo.update(userId, { refreshTokenHash: hash });
+  }
+
+  async clearRefreshToken(userId: string): Promise<void> {
+    await this.userRepo.update(userId, { refreshTokenHash: null });
+  }
+
+  async verifyRefreshToken(userId: string, rawToken: string): Promise<boolean> {
+    const user = await this.findById(userId);
+    if (!user?.refreshTokenHash) return false;
+    return argon2.verify(user.refreshTokenHash, rawToken);
+  }
+
   async create(dto: CreateUserDto): Promise<User> {
     const email = dto.email.toLowerCase();
     const existing = await this.userRepo.findOne({ where: { email } });
