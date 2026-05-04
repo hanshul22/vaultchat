@@ -113,7 +113,7 @@ export class AuthService {
     await this.usersService.saveRefreshToken(userId, signed);
     res.cookie('refresh_token', signed, {
       httpOnly: true,
-      secure: false,
+      secure: process.env['NODE_ENV'] === 'production',
       sameSite: 'strict',
       path: '/api/v1/auth/refresh',
       maxAge: refreshTtl * 1000,
