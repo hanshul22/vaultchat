@@ -7,7 +7,16 @@
     "migration:generate": "npm run typeorm -- migration:generate",
     "migration:run": "npm run typeorm -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
-    "migration:show": "npm run typeorm -- migration:show"
+    "migration:show": "npm run typeorm -- migration:show",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,html,scss,json,md}": [
+      "prettier --write"
+    ],
+    "*.{ts,tsx}": [
+      "eslint --fix"
+    ]
   },
   "private": true,
   "devDependencies": {
@@ -47,11 +56,13 @@
     "eslint": "^9.8.0",
     "eslint-config-prettier": "^10.0.0",
     "eslint-plugin-playwright": "^1.6.2",
+    "husky": "^9.1.7",
     "jest": "^30.0.2",
     "jest-environment-jsdom": "^30.0.2",
     "jest-environment-node": "^30.0.2",
     "jest-preset-angular": "~16.0.0",
     "jest-util": "^30.0.2",
+    "lint-staged": "^16.4.0",
     "nx": "22.6.5",
     "prettier": "~3.6.2",
     "ts-jest": "^29.4.0",
