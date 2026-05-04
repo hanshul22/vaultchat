@@ -7,6 +7,8 @@ import { envValidationSchema } from '../config/env.validation';
 import { DatabaseModule } from '../database/database.module';
 import { RedisModule } from '../redis/redis.module';
 import { HealthController } from '../health/health.controller';
+import { AuthModule } from '../auth/auth.module';
+import { ThrottlerModule } from '@nestjs/throttler';
 
 @Module({
   imports: [
@@ -23,6 +25,14 @@ import { HealthController } from '../health/health.controller';
     }),
     DatabaseModule,
     RedisModule,
+    AuthModule,
+    ThrottlerModule.forRoot([
+      {
+        name: 'short',
+        ttl: 60000,
+        limit: 20,
+      },
+    ]),
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
