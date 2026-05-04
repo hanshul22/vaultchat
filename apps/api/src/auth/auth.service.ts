@@ -51,10 +51,7 @@ export class AuthService {
     return { accessToken, user: new UserResponseDto(user) };
   }
 
-  async refresh(
-    req: Request,
-    res: Response,
-  ): Promise<{ accessToken: string }> {
+  async refresh(req: Request, res: Response): Promise<{ accessToken: string }> {
     const rawToken: string | undefined = (req.cookies as Record<string, string>)['refresh_token'];
     if (!rawToken) {
       throw new UnauthorizedException('Refresh token missing');
@@ -104,7 +101,7 @@ export class AuthService {
   private async issueRefreshToken(userId: string, res: Response): Promise<void> {
     const raw = randomBytes(32).toString('hex');
     const refreshTtl = this.configService.get('jwt.refreshTtl', { infer: true });
-    
+
     // We sign the raw cryptographically secure token into a JWT.
     const signed = this.jwtService.sign(
       { sub: userId, hash: raw },

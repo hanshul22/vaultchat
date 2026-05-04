@@ -19,15 +19,14 @@ export class HealthController {
     try {
       await this.dataSource.query('SELECT 1');
       db = 'ok';
-    } catch (_err) {
+    } catch {
       // connection failed — db stays 'error'
-      
     }
 
     try {
       await this.redis.ping();
       redisStatus = 'ok';
-    } catch (_err) {
+    } catch {
       // connection failed — redis stays 'error'
     }
 

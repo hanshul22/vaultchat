@@ -27,9 +27,7 @@ export const ALL_ENTITIES = [
   MessageMedia,
 ];
 
-export const buildTypeOrmConfig = (
-  configService: ConfigService,
-): TypeOrmModuleOptions => {
+export const buildTypeOrmConfig = (configService: ConfigService): TypeOrmModuleOptions => {
   const db = configService.get<DatabaseConfig>('database');
 
   if (!db) {
