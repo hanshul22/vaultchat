@@ -27,11 +27,24 @@ export interface JwtConfig {
   refreshTtl: number;
 }
 
+export interface GoogleOAuthConfig {
+  clientId: string;
+  clientSecret: string;
+  callbackUrl: string;
+}
+
+export interface MailConfig {
+  from: string;
+  apiKey: string;
+}
+
 export interface RootConfig {
   app: AppConfig;
   database: DatabaseConfig;
   redis: RedisConfig;
   jwt: JwtConfig;
+  googleOAuth: GoogleOAuthConfig;
+  mail: MailConfig;
   logLevel: string;
 }
 
@@ -61,6 +74,15 @@ export const configuration = (): RootConfig => ({
     refreshSecret: process.env['JWT_REFRESH_SECRET'] as string,
     accessTtl: parseInt(process.env['JWT_ACCESS_TTL'] as string, 10),
     refreshTtl: parseInt(process.env['JWT_REFRESH_TTL'] as string, 10),
+  },
+  googleOAuth: {
+    clientId: process.env['GOOGLE_OAUTH_CLIENT_ID'] as string,
+    clientSecret: process.env['GOOGLE_OAUTH_CLIENT_SECRET'] as string,
+    callbackUrl: process.env['GOOGLE_OAUTH_CALLBACK_URL'] as string,
+  },
+  mail: {
+    from: process.env['MAIL_FROM'] as string,
+    apiKey: process.env['MAIL_API_KEY'] as string,
   },
   logLevel: process.env['LOG_LEVEL'] as string,
 });

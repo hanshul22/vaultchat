@@ -31,4 +31,13 @@ export const envValidationSchema = Joi.object({
   JWT_REFRESH_SECRET: Joi.string().min(32).required(),
   JWT_ACCESS_TTL: Joi.number().integer().positive().required(),
   JWT_REFRESH_TTL: Joi.number().integer().positive().required(),
+
+  // Google OAuth
+  GOOGLE_OAUTH_CLIENT_ID: Joi.string().required(),
+  GOOGLE_OAUTH_CLIENT_SECRET: Joi.string().required(),
+  GOOGLE_OAUTH_CALLBACK_URL: Joi.string().uri().required(),
+
+  // Mail
+  MAIL_FROM: Joi.string().required(),
+  MAIL_API_KEY: Joi.string().required(),
 });
