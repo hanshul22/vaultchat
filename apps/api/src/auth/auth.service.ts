@@ -42,6 +42,13 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('Invalid email or password');
     }
+
+    if (!user.passwordHash) {
+      throw new UnauthorizedException(
+        'This account was created with Google. Use Google to sign in, or use Forgot Password to set a password and enable email login.',
+      );
+    }
+
     const valid = await argon2.verify(user.passwordHash, dto.password);
     if (!valid) {
       throw new UnauthorizedException('Invalid email or password');
