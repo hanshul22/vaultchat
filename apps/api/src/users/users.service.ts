@@ -59,4 +59,49 @@ export class UsersService {
   async findById(id: string): Promise<User | null> {
     return this.userRepo.findOne({ where: { id } });
   }
+
+  async findByGoogleId(googleId: string): Promise<User | null> {
+    return this.userRepo.findOne({ where: { googleId } });
+  }
+
+  async createGoogleUser(data: {
+    email: string;
+    fullName: string;
+    googleId: string;
+  }): Promise<User> {
+    const user = this.userRepo.create({
+      email: data.email.toLowerCase(),
+      fullName: data.fullName,
+      googleId: data.googleId,
+      passwordHash: null,
+    });
+    return this.userRepo.save(user);
+  }
+
+  async setPasswordResetToken(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {
+    await this.userRepo.update(userId, {
+      passwordResetTokenHash: tokenHash,
+      passwordResetTokenExpiresAt: expiresAt,
+    });
+  }
+
+  async findByPasswordResetTokenHash(tokenHash: string): Promise<User | null> {
+    return this.userRepo.findOne({ where: { passwordResetTokenHash: tokenHash } });
+  }
+
+  async clearPasswordResetToken(userId: string): Promise<void> {
+    await this.userRepo.update(userId, {
+      passwordResetTokenHash: null,
+      passwordResetTokenExpiresAt: null,
+    });
+  }
+
+  async updatePasswordAndClearReset(userId: string, passwordHash: string): Promise<void> {
+    await this.userRepo.update(userId, {
+      passwordHash,
+      passwordResetTokenHash: null,
+      passwordResetTokenExpiresAt: null,
+      refreshTokenHash: null,
+    });
+  }
 }
