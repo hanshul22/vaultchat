@@ -18,14 +18,10 @@ const dataSourceOptions: DataSourceOptions = {
   database: process.env['DB_DATABASE'],
   ssl:
     process.env['DB_SSL'] === 'true' ? { rejectUnauthorized: false } : false,
-
   entities: [...ALL_ENTITIES],
-
   migrations: [__dirname + '/migrations/*.{ts,js}'],
   migrationsTableName: 'typeorm_migrations',
-
   synchronize: false,
-
   logging: ['error', 'warn'],
 };
 

@@ -21,7 +21,6 @@ export class HealthController {
       db = 'ok';
     } catch {
       // connection failed — db stays 'error'
-      
     }
 
     try {

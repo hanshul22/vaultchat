@@ -1,9 +1,10 @@
 import { Global, Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { MailService } from './mail.service';
 
-/** Stub — full implementation comes in a later phase. */
 @Global()
 @Module({
+  imports: [ConfigModule],
   providers: [MailService],
   exports: [MailService],
 })
