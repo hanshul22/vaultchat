@@ -3,6 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as argon2 from 'argon2';
 import { User } from './entities/user.entity';
+import { CloudinaryAccount, CloudinaryAccountRole } from '../cloudinary-accounts/entities/cloudinary-account.entity';
+import { UserResponseDto } from './dto/user-response.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 
 @Injectable()
@@ -10,7 +12,31 @@ export class UsersService {
   constructor(
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @InjectRepository(CloudinaryAccount)
+    private readonly cloudinaryAccountRepo: Repository<CloudinaryAccount>,
   ) {}
+
+  /**
+   * Loads a user by ID and computes onboardingComplete.
+   * onboardingComplete = true when the user has at least one active Primary
+   * Cloudinary account.
+   */
+  async findMe(userId: string): Promise<UserResponseDto> {
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) {
+      throw new Error(`User ${userId} not found`);
+    }
+
+    const primaryCount = await this.cloudinaryAccountRepo.count({
+      where: {
+        userId,
+        role: CloudinaryAccountRole.PRIMARY,
+        isActive: true,
+      },
+    });
+
+    return new UserResponseDto(user, primaryCount > 0);
+  }
 
   async saveRefreshToken(userId: string, rawToken: string): Promise<void> {
     const hash = await argon2.hash(rawToken, {
@@ -38,17 +64,20 @@ export class UsersService {
     if (existing) {
       throw new ConflictException('An account with this email already exists');
     }
+
     const passwordHash = await argon2.hash(dto.password, {
       type: argon2.argon2id,
       memoryCost: 19456,
       timeCost: 2,
       parallelism: 1,
     });
+
     const user = this.userRepo.create({
       email,
       fullName: dto.fullName,
       passwordHash,
     });
+
     return this.userRepo.save(user);
   }
 
@@ -78,7 +107,11 @@ export class UsersService {
     return this.userRepo.save(user);
   }
 
-  async setPasswordResetToken(userId: string, tokenHash: string, expiresAt: Date): Promise<void> {
+  async setPasswordResetToken(
+    userId: string,
+    tokenHash: string,
+    expiresAt: Date,
+  ): Promise<void> {
     await this.userRepo.update(userId, {
       passwordResetTokenHash: tokenHash,
       passwordResetTokenExpiresAt: expiresAt,

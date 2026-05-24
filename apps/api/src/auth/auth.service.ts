@@ -45,7 +45,7 @@ export class AuthService {
     });
     const accessToken = this.issueAccessToken(user.id, user.email);
     await this.issueRefreshToken(user.id, res);
-    return { accessToken, user: new UserResponseDto(user) };
+    return { accessToken, user: new UserResponseDto(user, false) };
   }
 
   async login(
@@ -69,7 +69,7 @@ export class AuthService {
     }
     const accessToken = this.issueAccessToken(user.id, user.email);
     await this.issueRefreshToken(user.id, res);
-    return { accessToken, user: new UserResponseDto(user) };
+    return { accessToken, user: new UserResponseDto(user, false) };
   }
 
   async refresh(req: Request, res: Response): Promise<{ accessToken: string }> {
@@ -194,7 +194,7 @@ export class AuthService {
 
     const accessToken = this.issueAccessToken(user.id, user.email);
     await this.issueRefreshToken(user.id, res);
-    return { accessToken, user: new UserResponseDto(user) };
+    return { accessToken, user: new UserResponseDto(user, false) };
   }
 
   private issueAccessToken(userId: string, email: string): string {

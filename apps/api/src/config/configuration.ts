@@ -20,6 +20,11 @@ export interface RedisConfig {
   password: string;
   tls: boolean;
 }
+
+export interface EncryptionConfig {
+  key: string;
+}
+
 export interface JwtConfig {
   accessSecret: string;
   refreshSecret: string;
@@ -42,6 +47,7 @@ export interface RootConfig {
   app: AppConfig;
   database: DatabaseConfig;
   redis: RedisConfig;
+  encryption: EncryptionConfig;
   jwt: JwtConfig;
   googleOAuth: GoogleOAuthConfig;
   mail: MailConfig;
@@ -68,6 +74,9 @@ export const configuration = (): RootConfig => ({
     username: process.env['REDIS_USERNAME'] as string,
     password: process.env['REDIS_PASSWORD'] as string,
     tls: process.env['REDIS_TLS'] === 'true',
+  },
+  encryption: {
+    key: process.env['AES_ENCRYPTION_KEY'] as string,
   },
   jwt: {
     accessSecret: process.env['JWT_ACCESS_SECRET'] as string,

@@ -1,21 +1,23 @@
-import { Controller, Get, UseGuards, Req } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { Controller, Get, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { JwtAccessGuard, JwtPayload } from '../auth/guards/jwt-access.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UsersService } from './users.service';
 import { UserResponseDto } from './dto/user-response.dto';
-import { Request } from 'express';
 
 @Controller('v1/users')
+@UseGuards(JwtAccessGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  /**
+   * GET /api/v1/users/me
+   *
+   * Returns the authenticated user's profile including onboardingComplete,
+   * which is true once the user has an active Primary Cloudinary account.
+   */
   @Get('me')
-  @UseGuards(JwtAuthGuard)
-  async getMe(@Req() req: Request): Promise<UserResponseDto> {
-    const user = req.user as { id: string; email: string };
-    const found = await this.usersService.findById(user.id);
-    if (!found) {
-      throw new Error('User not found');
-    }
-    return new UserResponseDto(found);
+  @HttpCode(HttpStatus.OK)
+  getMe(@CurrentUser() user: JwtPayload): Promise<UserResponseDto> {
+    return this.usersService.findMe(user.sub);
   }
 }

@@ -35,12 +35,7 @@ export class User {
   @Column({ name: 'google_id', type: 'varchar', length: 255, nullable: true })
   googleId!: string | null;
 
-  @Column({
-    name: 'refresh_token_hash',
-    type: 'varchar',
-    length: 255,
-    nullable: true,
-  })
+  @Column({ name: 'refresh_token_hash', type: 'varchar', length: 255, nullable: true })
   refreshTokenHash!: string | null;
 
   @Column({ name: 'password_reset_token_hash', type: 'varchar', length: 255, nullable: true })
