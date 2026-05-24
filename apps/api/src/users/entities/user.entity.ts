@@ -39,6 +39,18 @@ export class User {
   @Column({ name: 'google_id', type: 'varchar', length: 64, nullable: true })
   googleId!: string | null;
 
+  // ── Auth fields (stubs for future phases) ────────────────────────────────
+  // Populated by the password-reset flow (Phase 3). Nullable until that flow runs.
+  @Column({ name: 'password_reset_token_hash', type: 'varchar', length: 64, nullable: true })
+  passwordResetTokenHash!: string | null;
+
+  @Column({ name: 'password_reset_token_expires_at', type: 'timestamptz', nullable: true })
+  passwordResetTokenExpiresAt!: Date | null;
+
+  // Hashed refresh token stored server-side for rotation/revocation (Phase 3).
+  @Column({ name: 'refresh_token_hash', type: 'varchar', length: 255, nullable: true })
+  refreshTokenHash!: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 

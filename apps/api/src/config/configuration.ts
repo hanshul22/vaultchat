@@ -21,10 +21,23 @@ export interface AppConfig {
     tls: boolean;
   }
   
+  export interface EncryptionConfig {
+    key: string;
+  }
+
+  export interface JwtConfig {
+    accessSecret: string;
+    refreshSecret: string;
+    accessTtl: number;
+    refreshTtl: number;
+  }
+
   export interface RootConfig {
     app: AppConfig;
     database: DatabaseConfig;
     redis: RedisConfig;
+    encryption: EncryptionConfig;
+    jwt: JwtConfig;
     logLevel: string;
   }
   
@@ -48,6 +61,15 @@ export interface AppConfig {
       username: process.env['REDIS_USERNAME'] as string,
       password: process.env['REDIS_PASSWORD'] as string,
       tls: process.env['REDIS_TLS'] === 'true',
+    },
+    encryption: {
+      key: process.env['AES_ENCRYPTION_KEY'] as string,
+    },
+    jwt: {
+      accessSecret: process.env['JWT_ACCESS_SECRET'] as string,
+      refreshSecret: process.env['JWT_REFRESH_SECRET'] as string,
+      accessTtl: parseInt(process.env['JWT_ACCESS_TTL'] as string, 10),
+      refreshTtl: parseInt(process.env['JWT_REFRESH_TTL'] as string, 10),
     },
     logLevel: process.env['LOG_LEVEL'] as string,
   });
