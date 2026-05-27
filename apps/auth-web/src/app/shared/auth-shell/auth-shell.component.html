@@ -1,0 +1,32 @@
+<div class="auth-page">
+  @if (showBackLink) {
+    <div class="auth-page__back">
+      <a mat-button [routerLink]="backLink">
+        <span aria-hidden="true">←</span>
+        <span class="auth-page__back-label">{{ backLabel }}</span>
+      </a>
+    </div>
+  }
+
+  <mat-card appearance="outlined" class="auth-card">
+    <header class="auth-card__header">
+      @if (eyebrow) {
+        <span class="auth-card__eyebrow">{{ eyebrow }}</span>
+      }
+      @if (title) {
+        <h1 class="auth-card__title">{{ title }}</h1>
+      }
+      @if (description) {
+        <p class="auth-card__description">{{ description }}</p>
+      }
+    </header>
+
+    <section class="auth-card__body">
+      <ng-content />
+    </section>
+
+    <footer class="auth-card__footer">
+      <small>VaultChat — private chat and media cloud</small>
+    </footer>
+  </mat-card>
+</div>
