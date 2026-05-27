@@ -5,7 +5,7 @@ import { Injectable, Logger } from '@nestjs/common';
 export class MailService {
   private readonly logger = new Logger(MailService.name);
 
-  async sendPasswordResetEmail(_email: string, _token: string): Promise<void> {
+  async sendPasswordResetEmail(): Promise<void> {
     this.logger.warn('MailService.sendPasswordResetEmail is not yet implemented');
   }
 }
