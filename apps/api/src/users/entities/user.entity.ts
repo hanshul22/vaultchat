@@ -17,39 +17,32 @@ import { StorageMember } from '../../storage-spaces/entities/storage-member.enti
 import { StorageSpace } from '../../storage-spaces/entities/storage-space.entity';
 
 @Entity({ name: 'users' })
+@Index(['email'], { unique: true })
+@Index(['googleId'], { unique: true, where: '"google_id" IS NOT NULL' })
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Index({ unique: true })
-  @Column({ type: 'varchar', length: 255 })
+  @Column({ name: 'email', type: 'varchar', length: 255, unique: true })
   email!: string;
 
-  @Column({ name: 'full_name', type: 'varchar', length: 120 })
+  @Column({ name: 'full_name', type: 'varchar', length: 255 })
   fullName!: string;
 
-  // argon2 hash. Never returned from an API.
-  // Exclusion from responses will be handled at the DTO layer in Phase 3.
-  @Column({ name: 'password_hash', type: 'varchar', length: 255 })
-  passwordHash!: string;
+  @Column({ name: 'password_hash', type: 'varchar', length: 255, nullable: true })
+  passwordHash!: string | null;
 
-  // Google OAuth linking. Nullable because linking is optional (PRD §3.3).
-  // Partial unique index: uniqueness only applies when google_id IS NOT NULL.
-  @Index({ unique: true, where: '"google_id" IS NOT NULL' })
-  @Column({ name: 'google_id', type: 'varchar', length: 64, nullable: true })
+  @Column({ name: 'google_id', type: 'varchar', length: 255, nullable: true })
   googleId!: string | null;
 
-  // ── Auth fields (stubs for future phases) ────────────────────────────────
-  // Populated by the password-reset flow (Phase 3). Nullable until that flow runs.
-  @Column({ name: 'password_reset_token_hash', type: 'varchar', length: 64, nullable: true })
+  @Column({ name: 'refresh_token_hash', type: 'varchar', length: 255, nullable: true })
+  refreshTokenHash!: string | null;
+
+  @Column({ name: 'password_reset_token_hash', type: 'varchar', length: 255, nullable: true })
   passwordResetTokenHash!: string | null;
 
   @Column({ name: 'password_reset_token_expires_at', type: 'timestamptz', nullable: true })
   passwordResetTokenExpiresAt!: Date | null;
-
-  // Hashed refresh token stored server-side for rotation/revocation (Phase 3).
-  @Column({ name: 'refresh_token_hash', type: 'varchar', length: 255, nullable: true })
-  refreshTokenHash!: string | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
@@ -57,29 +50,27 @@ export class User {
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt!: Date;
 
-  // Soft delete for USER_FLOW.md §16 — 30-day grace window.
-  // TypeORM auto-excludes these from .find() unless { withDeleted: true }.
   @DeleteDateColumn({ name: 'deleted_at', type: 'timestamptz', nullable: true })
   deletedAt!: Date | null;
 
-  @OneToMany(() => CloudinaryAccount, (account) => account.user)
+  @OneToMany(() => CloudinaryAccount, (cloudinaryAccount) => cloudinaryAccount.user)
   cloudinaryAccounts!: CloudinaryAccount[];
-
-  @OneToMany(() => Media, (media) => media.owner)
-  media!: Media[];
 
   @OneToMany(() => Album, (album) => album.owner)
   albums!: Album[];
 
-  @OneToMany(() => StorageSpace, (space) => space.owner)
-  ownedStorageSpaces!: StorageSpace[];
+  @OneToMany(() => Media, (media) => media.owner)
+  media!: Media[];
 
-  @OneToMany(() => StorageMember, (member) => member.user)
-  storageMemberships!: StorageMember[];
-
-  @OneToMany(() => ConversationMember, (member) => member.user)
+  @OneToMany(() => ConversationMember, (conversationMembership) => conversationMembership.user)
   conversationMemberships!: ConversationMember[];
 
   @OneToMany(() => Message, (message) => message.sender)
   messages!: Message[];
+
+  @OneToMany(() => StorageSpace, (storageSpace) => storageSpace.owner)
+  ownedStorageSpaces!: StorageSpace[];
+
+  @OneToMany(() => StorageMember, (storageMembership) => storageMembership.user)
+  storageMemberships!: StorageMember[];
 }

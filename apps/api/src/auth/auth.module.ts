@@ -1,35 +1,35 @@
 import { Global, Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
-import { RootConfig } from '../config/configuration';
-import { JwtAccessGuard } from './guards/jwt-access.guard';
+import { PassportModule } from '@nestjs/passport';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { UsersModule } from '../users/users.module';
+import { RootConfig } from '../config/configuration';
 import { MailModule } from '../mail/mail.module';
+import { JwtAccessGuard } from './guards/jwt-access.guard';
+import { GoogleStrategy } from './strategies/google.strategy';
 
-/**
- * Global auth module.
- * Registers JwtModule and exports JwtAccessGuard + JwtModule so any
- * feature module can use @UseGuards(JwtAccessGuard) without re-importing.
- */
 @Global()
 @Module({
   imports: [
     UsersModule,
+    PassportModule,
+    ConfigModule,
     MailModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (cs: ConfigService<RootConfig, true>) => ({
-        secret: cs.get('jwt.accessSecret', { infer: true }),
+      useFactory: (configService: ConfigService<RootConfig, true>) => ({
+        secret: configService.get('jwt.accessSecret', { infer: true }),
         signOptions: {
-          expiresIn: cs.get('jwt.accessTtl', { infer: true }),
+          expiresIn: configService.get('jwt.accessTtl', { infer: true }),
         },
       }),
     }),
   ],
-  providers: [AuthService, JwtAccessGuard],
+  providers: [AuthService, JwtAccessGuard, GoogleStrategy],
   exports: [AuthService, JwtAccessGuard, JwtModule],
   controllers: [AuthController],
 })
