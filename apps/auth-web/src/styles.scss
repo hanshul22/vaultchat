@@ -1,1 +1,30 @@
-/* You can add global styles to this file, and also import other style files */
+/* Angular Material prebuilt theme + CDK overlay base styles. */
+@use '@angular/cdk/overlay-prebuilt.css';
+@use '@angular/material/prebuilt-themes/azure-blue.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+  background-color: #f5f7fb;
+  color: #1f2937;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
