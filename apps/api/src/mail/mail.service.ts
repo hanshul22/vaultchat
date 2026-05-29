@@ -11,8 +11,11 @@ export class MailService {
   async sendPasswordResetEmail(to: string, resetToken: string): Promise<void> {
     const from = this.configService.get('mail.from', { infer: true });
     const apiKey = this.configService.get('mail.apiKey', { infer: true });
-
-    const resetLink = `http://localhost:4200/reset-password?token=${resetToken}`;
+    const frontendAuthUrl = this.configService.getOrThrow<string>('frontend.authUrl' as never);
+    const normalizedBaseUrl = frontendAuthUrl.endsWith('/')
+      ? frontendAuthUrl.slice(0, -1)
+      : frontendAuthUrl;
+    const resetLink = `${normalizedBaseUrl}/reset-password?token=${resetToken}`;
 
     const body = JSON.stringify({
       from,

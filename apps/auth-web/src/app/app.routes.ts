@@ -1,5 +1,7 @@
 import { Route } from '@angular/router';
 
+import { authGuard } from './core/guards/auth.guard';
+
 export const appRoutes: Route[] = [
   {
     path: '',
@@ -9,16 +11,12 @@ export const appRoutes: Route[] = [
   {
     path: 'login',
     loadComponent: () =>
-      import('./features/login/login-page.component').then(
-        (m) => m.LoginPageComponent,
-      ),
+      import('./features/login/login-page.component').then((m) => m.LoginPageComponent),
   },
   {
     path: 'signup',
     loadComponent: () =>
-      import('./features/signup/signup-page.component').then(
-        (m) => m.SignupPageComponent,
-      ),
+      import('./features/signup/signup-page.component').then((m) => m.SignupPageComponent),
   },
   {
     path: 'forgot-password',
@@ -28,18 +26,32 @@ export const appRoutes: Route[] = [
       ),
   },
   {
-    path: 'onboarding/instructions',
+    path: 'reset-password',
     loadComponent: () =>
-      import(
-        './features/onboarding/onboarding-instructions-page.component'
-      ).then((m) => m.OnboardingInstructionsPageComponent),
+      import('./features/reset-password/reset-password-page.component').then(
+        (m) => m.ResetPasswordPageComponent,
+      ),
+  },
+  {
+    path: 'onboarding/instructions',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./features/onboarding/onboarding-instructions-page.component').then(
+        (m) => m.OnboardingInstructionsPageComponent,
+      ),
   },
   {
     path: 'onboarding/cloudinary-setup',
+    canActivate: [authGuard],
     loadComponent: () =>
       import('./features/onboarding/cloudinary-setup-page.component').then(
         (m) => m.CloudinarySetupPageComponent,
       ),
+  },
+  {
+    path: 'app-home',
+    loadComponent: () =>
+      import('./features/app-home/app-home-page.component').then((m) => m.AppHomePageComponent),
   },
   {
     path: '**',
