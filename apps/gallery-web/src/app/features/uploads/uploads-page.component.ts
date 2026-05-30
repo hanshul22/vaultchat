@@ -8,8 +8,10 @@ import {
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
+import { toSignal } from '@angular/core/rxjs-interop';
 
 import { UploadService } from '../../core/services/upload.service';
+import { VideoProcessingService } from '../../core/services/video-processing.service';
 import { UploadQueueItem, UploadQueueStatus } from '../../core/models/upload-queue-item.model';
 import { PreflightRejectReason } from '../../core/models/media-upload-preflight.model';
 
@@ -77,8 +79,9 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
  *   selected → checking → ready → uploading → uploaded
  *                       ↘ uploadError ↗ (retry)
  *
- * ffmpeg.wasm compression and chunk splitting are deferred to the next phase.
- * All files that pass preflight are eligible for direct single-part upload.
+ * VideoProcessingService is injected and its load state is surfaced in the UI
+ * so video files show whether ffmpeg.wasm is available. Real transcoding
+ * (H.264 CRF 18, 1080p downscale) is wired in the next step.
  */
 @Component({
   selector: 'app-uploads-page',
@@ -131,6 +134,40 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         tabindex="-1"
         (change)="onFileInputChange($event)"
       />
+
+      <!-- ── ffmpeg status banner (shown only when video files are queued) ── -->
+      @if (hasVideoItems()) {
+        <div
+          class="ffmpeg-banner"
+          [attr.data-state]="ffmpegState()"
+          role="status"
+          aria-live="polite"
+        >
+          @switch (ffmpegState()) {
+            @case ('idle') {
+              <span class="ffmpeg-banner__icon">🎬</span>
+              <span>
+                Video processing (ffmpeg.wasm) will be loaded when needed. Videos are uploaded
+                directly for now.
+              </span>
+            }
+            @case ('loading') {
+              <span class="ffmpeg-banner__spinner" aria-hidden="true"></span>
+              <span>Loading video processing engine…</span>
+            }
+            @case ('ready') {
+              <span class="ffmpeg-banner__icon">✅</span>
+              <span>Video processing engine ready.</span>
+            }
+            @case ('failed') {
+              <span class="ffmpeg-banner__icon">⚠️</span>
+              <span>
+                Video processing engine unavailable — videos will be uploaded without compression.
+              </span>
+            }
+          }
+        </div>
+      }
 
       <!-- ── Queue ───────────────────────────────────────────────────────── -->
       @if (queue().length > 0) {
@@ -666,6 +703,55 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         font-weight: 600;
         text-decoration: underline;
       }
+
+      /* ── ffmpeg status banner ─────────────────────────────────────────── */
+      .ffmpeg-banner {
+        display: flex;
+        align-items: center;
+        gap: 0.625rem;
+        padding: 0.625rem 0.875rem;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+        background: #f9fafb;
+        font-size: 0.8rem;
+        color: #6b7280;
+        margin-bottom: 1rem;
+        line-height: 1.4;
+      }
+
+      .ffmpeg-banner[data-state='ready'] {
+        background: #f0fdf4;
+        border-color: #bbf7d0;
+        color: #15803d;
+      }
+
+      .ffmpeg-banner[data-state='loading'] {
+        background: #f5f3ff;
+        border-color: #e0e7ff;
+        color: #4338ca;
+      }
+
+      .ffmpeg-banner[data-state='failed'] {
+        background: #fffbeb;
+        border-color: #fde68a;
+        color: #92400e;
+      }
+
+      .ffmpeg-banner__icon {
+        font-size: 1rem;
+        flex-shrink: 0;
+      }
+
+      .ffmpeg-banner__spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid #e0e7ff;
+        border-top-color: #6366f1;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        flex-shrink: 0;
+      }
     `,
   ],
 })
@@ -673,10 +759,19 @@ export class UploadsPageComponent {
   @ViewChild('fileInput') private fileInputRef!: ElementRef<HTMLInputElement>;
 
   private readonly uploadService = inject(UploadService);
+  private readonly videoProcessing = inject(VideoProcessingService);
 
   readonly fileInputAccept = FILE_INPUT_ACCEPT;
   readonly queue = signal<UploadQueueItem[]>([]);
   readonly isDragging = signal(false);
+
+  /**
+   * Reactive snapshot of the ffmpeg engine load state.
+   * Drives the ffmpeg status banner shown when video files are in the queue.
+   */
+  readonly ffmpegState = toSignal(this.videoProcessing.loadState$, {
+    initialValue: this.videoProcessing.loadState,
+  });
 
   // ── Computed helpers ────────────────────────────────────────────────────
 
@@ -707,6 +802,11 @@ export class UploadsPageComponent {
 
   uploadedCount(): number {
     return this.queue().filter((i) => i.status === 'uploaded').length;
+  }
+
+  /** True when at least one video file is in the queue (any status). */
+  hasVideoItems(): boolean {
+    return this.queue().some((i) => i.mimeType.startsWith('video/'));
   }
 
   // ── File selection ──────────────────────────────────────────────────────
