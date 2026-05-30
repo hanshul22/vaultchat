@@ -7,15 +7,26 @@ import {
   MediaUploadPreflightResponse,
   PreflightRequest,
 } from '../models/media-upload-preflight.model';
+import { MediaUploadResponse } from '../models/media-upload-response.model';
+
+/** Optional metadata that may accompany a direct upload. */
+export interface DirectUploadOptions {
+  /**
+   * UUID of a shared storage space to file the upload under.
+   * Omit (or pass null) for personal Vault uploads.
+   */
+  storageSpaceId?: string | null;
+}
 
 /**
- * Upload service — preflight-only for this step.
+ * Upload service — preflight + direct upload.
  *
- * Calls POST /api/v1/media/upload/preflight to validate a file against the
- * backend's MIME allowlist and Vault capacity before any bytes are sent.
+ * Calls:
+ *   POST /api/v1/media/upload/preflight  — quota/MIME check without consuming storage
+ *   POST /api/v1/media/upload            — multipart upload of a single file
  *
- * The actual upload (POST /api/v1/media/upload multipart) and any
- * ffmpeg.wasm compression are intentionally deferred to the next phase.
+ * ffmpeg.wasm compression and chunk splitting are intentionally deferred to
+ * a later phase. This service handles only single-part direct uploads.
  *
  * Authentication is handled transparently by the shared auth interceptors
  * registered in app.config.ts.
@@ -53,5 +64,38 @@ export class UploadService {
       body,
       { withCredentials: true },
     );
+  }
+
+  /**
+   * Uploads a single file directly to POST /api/v1/media/upload.
+   *
+   * Builds a `multipart/form-data` request using the exact field names the
+   * backend expects:
+   *   - `file`           — the binary file part (required, handled by Multer)
+   *   - `storageSpaceId` — optional UUID string (handled by MediaUploadDto)
+   *
+   * On success the observable emits a {@link MediaUploadResponse} containing
+   * the created media row's metadata.
+   *
+   * On failure the observable errors with an `HttpErrorResponse`. Callers
+   * should inspect `error.status` and `error.error` for structured messages.
+   *
+   * @param file     The browser `File` object to upload.
+   * @param options  Optional metadata (storageSpaceId).
+   */
+  uploadFile(file: File, options: DirectUploadOptions = {}): Observable<MediaUploadResponse> {
+    const form = new FormData();
+
+    // Field name must match the FileInterceptor('file', ...) in the controller.
+    form.append('file', file, file.name);
+
+    // Optional metadata field — only append when a value is provided.
+    if (options.storageSpaceId) {
+      form.append('storageSpaceId', options.storageSpaceId);
+    }
+
+    return this.http.post<MediaUploadResponse>(`${this.apiBaseUrl}/media/upload`, form, {
+      withCredentials: true,
+    });
   }
 }

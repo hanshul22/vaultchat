@@ -7,6 +7,7 @@ import {
   ViewChild,
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
+import { DatePipe } from '@angular/common';
 
 import { UploadService } from '../../core/services/upload.service';
 import { UploadQueueItem, UploadQueueStatus } from '../../core/models/upload-queue-item.model';
@@ -28,20 +29,17 @@ const FILE_INPUT_ACCEPT = ALLOWED_MIME_TYPES.join(',');
 /** 100 MB ceiling (mirrors MAX_UPLOAD_SIZE_BYTES from Phase 7). */
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 
-/** Returns true when the MIME type is in the backend allowlist. */
 function isAllowedMime(mime: string): boolean {
   return (ALLOWED_MIME_TYPES as readonly string[]).includes(mime);
 }
 
-/** Formats bytes into a human-readable string (e.g. "4.2 MB"). */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Converts a backend rejection reason to a user-friendly message. */
-function reasonMessage(reason: PreflightRejectReason | undefined): string {
+function preflightReasonMessage(reason: PreflightRejectReason | undefined): string {
   if (reason === 'VAULT_FULL') {
     return 'Your Vault is full. Delete some files or add another Cloudinary account.';
   }
@@ -51,20 +49,41 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
   return 'The server rejected this file. Check your Vault capacity.';
 }
 
+function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
+  const body = err.error as { reason?: string; message?: string } | null;
+  switch (err.status) {
+    case 413:
+      return `File exceeds the server's 100 MB limit.`;
+    case 415:
+      return `Unsupported media type. The server rejected "${mimeType}".`;
+    case 507:
+      return preflightReasonMessage(body?.reason as PreflightRejectReason | undefined);
+    case 400:
+      return body?.message ?? 'Invalid request. Check the file size and type.';
+    case 401:
+      return 'Session expired. Please refresh the page and sign in again.';
+    case 502:
+    case 504:
+      return 'Upload to Cloudinary failed. Please try again.';
+    default:
+      return 'Upload failed. Please try again.';
+  }
+}
+
 /**
- * /uploads — upload queue shell with preflight validation.
+ * /uploads — upload queue with preflight validation and direct upload execution.
  *
- * Supports click-to-browse and drag-and-drop file selection. Validates MIME
- * types and file size client-side before calling the backend preflight
- * endpoint for each file. Shows per-file status (selected → checking →
- * ready | error).
+ * State machine per file:
+ *   selected → checking → ready → uploading → uploaded
+ *                       ↘ uploadError ↗ (retry)
  *
- * Actual upload submission (POST /api/v1/media/upload) and ffmpeg.wasm
- * compression are intentionally deferred to the next phase.
+ * ffmpeg.wasm compression and chunk splitting are deferred to the next phase.
+ * All files that pass preflight are eligible for direct single-part upload.
  */
 @Component({
   selector: 'app-uploads-page',
   standalone: true,
+  imports: [DatePipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="uploads-page">
@@ -116,6 +135,7 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
       <!-- ── Queue ───────────────────────────────────────────────────────── -->
       @if (queue().length > 0) {
         <section class="queue" aria-label="Upload queue">
+          <!-- Queue header + bulk actions -->
           <div class="queue__header">
             <h2 class="queue__title">
               Queue
@@ -123,26 +143,48 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
             </h2>
 
             <div class="queue__actions">
-              <!-- Run preflight for all files not yet checked -->
               @if (hasPendingItems()) {
                 <button
                   type="button"
-                  class="btn btn--primary"
-                  [disabled]="isCheckingAny()"
+                  class="btn btn--ghost"
+                  [disabled]="isBusy()"
                   (click)="runPreflightAll()"
                 >
                   @if (isCheckingAny()) {
                     Checking…
                   } @else {
-                    Check all files
+                    Check all
                   }
                 </button>
               }
 
-              <button type="button" class="btn btn--ghost" (click)="clearQueue()">Clear all</button>
+              @if (hasReadyItems()) {
+                <button
+                  type="button"
+                  class="btn btn--primary"
+                  [disabled]="isBusy()"
+                  (click)="uploadAll()"
+                >
+                  @if (isUploadingAny()) {
+                    Uploading…
+                  } @else {
+                    Upload {{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }}
+                  }
+                </button>
+              }
+
+              <button
+                type="button"
+                class="btn btn--ghost"
+                [disabled]="isBusy()"
+                (click)="clearQueue()"
+              >
+                Clear all
+              </button>
             </div>
           </div>
 
+          <!-- File list -->
           <ul class="queue__list" aria-label="Files in queue">
             @for (item of queue(); track item.clientId) {
               <li class="queue-item" [attr.data-status]="item.status">
@@ -152,10 +194,16 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
                     @case ('checking') {
                       <span class="queue-item__spinner"></span>
                     }
+                    @case ('uploading') {
+                      <span class="queue-item__spinner queue-item__spinner--upload"></span>
+                    }
                     @case ('ready') {
                       ✅
                     }
-                    @case ('error') {
+                    @case ('uploaded') {
+                      🎉
+                    }
+                    @case ('uploadError') {
                       ❌
                     }
                     @default {
@@ -173,10 +221,10 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
                     {{ formatBytes(item.sizeBytes) }} · {{ item.mimeType }}
                   </p>
 
-                  <!-- Preflight result -->
+                  <!-- Preflight OK -->
                   @if (item.status === 'ready' && item.preflightResult) {
-                    <p class="queue-item__preflight queue-item__preflight--ok">
-                      ✓ Ready — target:
+                    <p class="queue-item__status queue-item__status--ok">
+                      ✓ Preflight passed — target:
                       {{ item.preflightResult.targetAccountRole }}
                       @if (item.preflightResult.targetSecondaryOrder) {
                         slot {{ item.preflightResult.targetSecondaryOrder }}
@@ -184,8 +232,25 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
                     </p>
                   }
 
-                  @if (item.status === 'error' && item.errorMessage) {
-                    <p class="queue-item__preflight queue-item__preflight--err">
+                  <!-- Uploading -->
+                  @if (item.status === 'uploading') {
+                    <p class="queue-item__status queue-item__status--info">
+                      Uploading to Cloudinary…
+                    </p>
+                  }
+
+                  <!-- Uploaded success -->
+                  @if (item.status === 'uploaded' && item.uploadedMedia) {
+                    <p class="queue-item__status queue-item__status--ok">✓ Uploaded successfully</p>
+                    <p class="queue-item__status queue-item__status--muted">
+                      ID: {{ item.uploadedMedia.id }} ·
+                      {{ item.uploadedMedia.createdAt | date: 'dd MMM yyyy, HH:mm' }}
+                    </p>
+                  }
+
+                  <!-- Error (preflight or upload) -->
+                  @if (item.status === 'uploadError' && item.errorMessage) {
+                    <p class="queue-item__status queue-item__status--err">
                       {{ item.errorMessage }}
                     </p>
                   }
@@ -193,11 +258,12 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
 
                 <!-- Per-item actions -->
                 <div class="queue-item__actions">
-                  @if (item.status === 'selected' || item.status === 'error') {
+                  <!-- Check (preflight) -->
+                  @if (item.status === 'selected') {
                     <button
                       type="button"
                       class="btn btn--sm btn--ghost"
-                      [disabled]="isCheckingAny()"
+                      [disabled]="isBusy()"
                       (click)="runPreflightOne(item.clientId)"
                       [attr.aria-label]="'Check ' + item.filename"
                     >
@@ -205,26 +271,69 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
                     </button>
                   }
 
-                  <button
-                    type="button"
-                    class="btn btn--sm btn--danger-ghost"
-                    [disabled]="item.status === 'checking'"
-                    (click)="removeItem(item.clientId)"
-                    [attr.aria-label]="'Remove ' + item.filename"
-                  >
-                    Remove
-                  </button>
+                  <!-- Re-check after error -->
+                  @if (item.status === 'uploadError') {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--ghost"
+                      [disabled]="isBusy()"
+                      (click)="runPreflightOne(item.clientId)"
+                      [attr.aria-label]="'Retry check for ' + item.filename"
+                    >
+                      Re-check
+                    </button>
+                  }
+
+                  <!-- Upload single file -->
+                  @if (item.status === 'ready') {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--primary"
+                      [disabled]="isBusy()"
+                      (click)="uploadOne(item.clientId)"
+                      [attr.aria-label]="'Upload ' + item.filename"
+                    >
+                      Upload
+                    </button>
+                  }
+
+                  <!-- Remove (not while uploading/checking) -->
+                  @if (item.status !== 'uploading' && item.status !== 'checking') {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--danger-ghost"
+                      (click)="removeItem(item.clientId)"
+                      [attr.aria-label]="'Remove ' + item.filename"
+                    >
+                      Remove
+                    </button>
+                  }
                 </div>
               </li>
             }
           </ul>
 
-          <!-- ── Next-step notice ──────────────────────────────────────── -->
-          @if (hasReadyItems()) {
+          <!-- ── Summary notices ─────────────────────────────────────────── -->
+          @if (uploadedCount() > 0) {
+            <div class="queue__notice queue__notice--success" role="status">
+              🎉
+              <strong
+                >{{ uploadedCount() }} file{{ uploadedCount() === 1 ? '' : 's' }} uploaded</strong
+              >
+              to your Vault. Visit the
+              <a routerLink="/gallery" class="queue__notice-link">Gallery</a>
+              to see them.
+            </div>
+          }
+
+          @if (hasReadyItems() && !isUploadingAny()) {
             <div class="queue__notice" role="note">
-              <strong>{{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready.</strong>
-              Upload execution (POST /api/v1/media/upload) and optional ffmpeg.wasm compression will
-              be wired up in the next phase.
+              <strong
+                >{{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready for direct
+                upload.</strong
+              >
+              Optional ffmpeg.wasm compression for videos will be added in the next phase — files
+              are uploaded as-is for now.
             </div>
           }
         </section>
@@ -254,7 +363,6 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
         margin: 0;
       }
 
-      /* Hidden file input */
       .uploads-page__file-input {
         position: absolute;
         width: 1px;
@@ -386,12 +494,18 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
         border-color: #bbf7d0;
         background: #f0fdf4;
       }
-
-      .queue-item[data-status='error'] {
+      .queue-item[data-status='uploading'] {
+        border-color: #bfdbfe;
+        background: #eff6ff;
+      }
+      .queue-item[data-status='uploaded'] {
+        border-color: #6ee7b7;
+        background: #ecfdf5;
+      }
+      .queue-item[data-status='uploadError'] {
         border-color: #fecaca;
         background: #fef2f2;
       }
-
       .queue-item[data-status='checking'] {
         border-color: #e0e7ff;
         background: #f5f3ff;
@@ -414,6 +528,11 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
         border-radius: 50%;
         animation: spin 0.7s linear infinite;
         vertical-align: middle;
+      }
+
+      .queue-item__spinner--upload {
+        border-color: #bfdbfe;
+        border-top-color: #2563eb;
       }
 
       @keyframes spin {
@@ -440,20 +559,25 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
       .queue-item__meta {
         font-size: 0.75rem;
         color: #6b7280;
-        margin: 0 0 0.25rem;
+        margin: 0 0 0.2rem;
       }
 
-      .queue-item__preflight {
+      .queue-item__status {
         font-size: 0.75rem;
-        margin: 0;
+        margin: 0 0 0.1rem;
       }
-
-      .queue-item__preflight--ok {
+      .queue-item__status--ok {
         color: #15803d;
       }
-
-      .queue-item__preflight--err {
+      .queue-item__status--err {
         color: #b91c1c;
+      }
+      .queue-item__status--info {
+        color: #1d4ed8;
+      }
+      .queue-item__status--muted {
+        color: #9ca3af;
+        font-size: 0.7rem;
       }
 
       .queue-item__actions {
@@ -491,7 +615,6 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
         color: #fff;
         border-color: #6366f1;
       }
-
       .btn--primary:not(:disabled):hover {
         background: #4f46e5;
         border-color: #4f46e5;
@@ -502,7 +625,6 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
         color: #374151;
         border-color: #d1d5db;
       }
-
       .btn--ghost:not(:disabled):hover {
         background: #f3f4f6;
       }
@@ -517,12 +639,11 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
         color: #b91c1c;
         border-color: #fca5a5;
       }
-
       .btn--danger-ghost:not(:disabled):hover {
         background: #fef2f2;
       }
 
-      /* ── Next-step notice ─────────────────────────────────────────────── */
+      /* ── Notices ──────────────────────────────────────────────────────── */
       .queue__notice {
         margin-top: 1rem;
         padding: 0.875rem 1rem;
@@ -533,6 +654,18 @@ function reasonMessage(reason: PreflightRejectReason | undefined): string {
         color: #1e40af;
         line-height: 1.5;
       }
+
+      .queue__notice--success {
+        background: #f0fdf4;
+        border-color: #86efac;
+        color: #15803d;
+      }
+
+      .queue__notice-link {
+        color: inherit;
+        font-weight: 600;
+        text-decoration: underline;
+      }
     `,
   ],
 })
@@ -542,7 +675,6 @@ export class UploadsPageComponent {
   private readonly uploadService = inject(UploadService);
 
   readonly fileInputAccept = FILE_INPUT_ACCEPT;
-
   readonly queue = signal<UploadQueueItem[]>([]);
   readonly isDragging = signal(false);
 
@@ -552,8 +684,17 @@ export class UploadsPageComponent {
     return this.queue().some((i) => i.status === 'checking');
   }
 
+  isUploadingAny(): boolean {
+    return this.queue().some((i) => i.status === 'uploading');
+  }
+
+  /** True when any async operation is in flight — disables bulk actions. */
+  isBusy(): boolean {
+    return this.isCheckingAny() || this.isUploadingAny();
+  }
+
   hasPendingItems(): boolean {
-    return this.queue().some((i) => i.status === 'selected' || i.status === 'error');
+    return this.queue().some((i) => i.status === 'selected' || i.status === 'uploadError');
   }
 
   hasReadyItems(): boolean {
@@ -562,6 +703,10 @@ export class UploadsPageComponent {
 
   readyCount(): number {
     return this.queue().filter((i) => i.status === 'ready').length;
+  }
+
+  uploadedCount(): number {
+    return this.queue().filter((i) => i.status === 'uploaded').length;
   }
 
   // ── File selection ──────────────────────────────────────────────────────
@@ -574,7 +719,6 @@ export class UploadsPageComponent {
     const input = event.target as HTMLInputElement;
     if (input.files) {
       this.addFiles(Array.from(input.files));
-      // Reset so the same file can be re-selected after removal.
       input.value = '';
     }
   }
@@ -595,45 +739,30 @@ export class UploadsPageComponent {
     event.preventDefault();
     event.stopPropagation();
     this.isDragging.set(false);
-
     const files = event.dataTransfer?.files;
-    if (files) {
-      this.addFiles(Array.from(files));
-    }
+    if (files) this.addFiles(Array.from(files));
   }
 
   // ── Queue management ────────────────────────────────────────────────────
 
   private addFiles(files: File[]): void {
-    const newItems: UploadQueueItem[] = [];
-
-    for (const file of files) {
-      // Client-side MIME validation
+    const newItems: UploadQueueItem[] = files.map((file) => {
       if (!isAllowedMime(file.type)) {
-        newItems.push(
-          this.makeItem(
-            file,
-            'error',
-            `Unsupported type "${file.type}". Allowed: JPEG, PNG, WebP, GIF, MP4, QuickTime.`,
-          ),
+        return this.makeItem(
+          file,
+          'uploadError',
+          `Unsupported type "${file.type}". Allowed: JPEG, PNG, WebP, GIF, MP4, QuickTime.`,
         );
-        continue;
       }
-
-      // Client-side size validation
       if (file.size > MAX_FILE_BYTES) {
-        newItems.push(
-          this.makeItem(
-            file,
-            'error',
-            `File exceeds the 100 MB limit (${formatBytes(file.size)}).`,
-          ),
+        return this.makeItem(
+          file,
+          'uploadError',
+          `File exceeds the 100 MB limit (${formatBytes(file.size)}).`,
         );
-        continue;
       }
-
-      newItems.push(this.makeItem(file, 'selected'));
-    }
+      return this.makeItem(file, 'selected');
+    });
 
     this.queue.update((q) => [...q, ...newItems]);
   }
@@ -649,7 +778,9 @@ export class UploadsPageComponent {
   // ── Preflight ───────────────────────────────────────────────────────────
 
   runPreflightAll(): void {
-    const pending = this.queue().filter((i) => i.status === 'selected' || i.status === 'error');
+    const pending = this.queue().filter(
+      (i) => i.status === 'selected' || i.status === 'uploadError',
+    );
     for (const item of pending) {
       this.runPreflightOne(item.clientId);
     }
@@ -657,39 +788,33 @@ export class UploadsPageComponent {
 
   runPreflightOne(clientId: string): void {
     const item = this.queue().find((i) => i.clientId === clientId);
-    if (!item || item.status === 'checking') return;
+    if (!item || item.status === 'checking' || item.status === 'uploading') return;
 
-    this.updateItem(clientId, {
+    this.patchItem(clientId, {
       status: 'checking',
       errorMessage: undefined,
       preflightResult: undefined,
+      uploadedMedia: undefined,
     });
 
     this.uploadService.checkPreflight(item.sizeBytes, item.mimeType).subscribe({
       next: (result) => {
         if (result.canUpload) {
-          this.updateItem(clientId, { status: 'ready', preflightResult: result });
+          this.patchItem(clientId, { status: 'ready', preflightResult: result });
         } else {
-          // Backend returned 200 with canUpload: false (shouldn't happen with
-          // current backend — it throws 507 — but handle defensively).
-          this.updateItem(clientId, {
-            status: 'error',
-            errorMessage: reasonMessage(result.reason),
+          this.patchItem(clientId, {
+            status: 'uploadError',
+            errorMessage: preflightReasonMessage(result.reason),
           });
         }
       },
       error: (err: HttpErrorResponse) => {
-        const body = err.error as {
-          reason?: string;
-          message?: string;
-        } | null;
-
+        const body = err.error as { reason?: string; message?: string } | null;
         let message: string;
-
         if (err.status === 415) {
           message = `Unsupported media type. The server rejected "${item.mimeType}".`;
         } else if (err.status === 507) {
-          message = reasonMessage(body?.reason as PreflightRejectReason | undefined);
+          message = preflightReasonMessage(body?.reason as PreflightRejectReason | undefined);
         } else if (err.status === 400) {
           message = body?.message ?? 'Invalid request. Check the file size and type.';
         } else if (err.status === 401) {
@@ -697,8 +822,35 @@ export class UploadsPageComponent {
         } else {
           message = 'Could not reach the server. Please try again.';
         }
+        this.patchItem(clientId, { status: 'uploadError', errorMessage: message });
+      },
+    });
+  }
 
-        this.updateItem(clientId, { status: 'error', errorMessage: message });
+  // ── Upload ──────────────────────────────────────────────────────────────
+
+  uploadAll(): void {
+    const ready = this.queue().filter((i) => i.status === 'ready');
+    for (const item of ready) {
+      this.uploadOne(item.clientId);
+    }
+  }
+
+  uploadOne(clientId: string): void {
+    const item = this.queue().find((i) => i.clientId === clientId);
+    if (!item || item.status !== 'ready') return;
+
+    this.patchItem(clientId, { status: 'uploading', errorMessage: undefined });
+
+    this.uploadService.uploadFile(item.file).subscribe({
+      next: (response) => {
+        this.patchItem(clientId, { status: 'uploaded', uploadedMedia: response });
+      },
+      error: (err: HttpErrorResponse) => {
+        this.patchItem(clientId, {
+          status: 'uploadError',
+          errorMessage: uploadErrorMessage(err, item.mimeType),
+        });
       },
     });
   }
@@ -717,7 +869,7 @@ export class UploadsPageComponent {
     };
   }
 
-  private updateItem(
+  private patchItem(
     clientId: string,
     patch: Partial<
       Omit<UploadQueueItem, 'clientId' | 'file' | 'filename' | 'sizeBytes' | 'mimeType'>
@@ -726,13 +878,11 @@ export class UploadsPageComponent {
     this.queue.update((q) => q.map((i) => (i.clientId === clientId ? { ...i, ...patch } : i)));
   }
 
-  /** Returns an emoji icon for a MIME type family. */
   mimeIcon(mimeType: string): string {
     if (mimeType.startsWith('video/')) return '🎬';
     if (mimeType.startsWith('image/')) return '🖼';
     return '📄';
   }
 
-  /** Exposed for template use. */
   readonly formatBytes = formatBytes;
 }
