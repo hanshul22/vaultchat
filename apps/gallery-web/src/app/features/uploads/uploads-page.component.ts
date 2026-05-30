@@ -865,6 +865,14 @@ export class UploadsPageComponent {
     });
 
     this.queue.update((q) => [...q, ...newItems]);
+
+    // Trigger lazy-load of ffmpeg.wasm as soon as the first video file
+    // enters the queue, so the engine is ready by the time the user clicks
+    // Upload. load() is idempotent — safe to call on every add.
+    const hasVideo = newItems.some((i) => i.mimeType.startsWith('video/'));
+    if (hasVideo && this.videoProcessing.loadState === 'idle') {
+      void this.videoProcessing.load();
+    }
   }
 
   removeItem(clientId: string): void {
