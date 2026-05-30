@@ -17,13 +17,13 @@ import { CloudinaryAccountsService } from './cloudinary-accounts.service';
 import { CreateCloudinaryAccountDto } from './dto/create-cloudinary-account.dto';
 import { CloudinaryAccountResponseDto } from './dto/cloudinary-account-response.dto';
 
-@Controller('v1/cloudinary-accounts')
+@Controller('cloudinary-accounts')
 @UseGuards(JwtAccessGuard)
 export class CloudinaryAccountsController {
   constructor(private readonly service: CloudinaryAccountsService) {}
 
   /**
-   * DELETE /api/v1/cloudinary-accounts/:id?force=true
+   * DELETE /api/cloudinary-accounts/:id?force=true
    *
    * Soft-deactivates a Cloudinary account (isActive = false).
    * - Returns 409 if the account is the active Primary.
@@ -41,21 +41,19 @@ export class CloudinaryAccountsController {
   }
 
   /**
-   * GET /api/v1/cloudinary-accounts
+   * GET /api/cloudinary-accounts
    *
    * Returns the authenticated user's active Cloudinary accounts ordered
    * as: Primary → Secondary slot 1 → Secondary slot 2.
    * No secret or encrypted secret is ever included in the response.
    */
   @Get()
-  async findAll(
-    @CurrentUser() user: JwtPayload,
-  ): Promise<CloudinaryAccountResponseDto[]> {
+  async findAll(@CurrentUser() user: JwtPayload): Promise<CloudinaryAccountResponseDto[]> {
     return this.service.findAllForUser(user.sub);
   }
 
   /**
-   * PATCH /api/v1/cloudinary-accounts/:id/swap-order
+   * PATCH /api/cloudinary-accounts/:id/swap-order
    *
    * Swaps the display order of the user's two active Secondary accounts
    * (slot 1 ↔ slot 2). The :id must belong to the authenticated user and
@@ -72,7 +70,7 @@ export class CloudinaryAccountsController {
   }
 
   /**
-   * PATCH /api/v1/cloudinary-accounts/:id/promote
+   * PATCH /api/cloudinary-accounts/:id/promote
    *
    * Promotes a Secondary account to Primary. The current Primary is
    * atomically demoted to Secondary in the promoted account's previous slot.
@@ -88,7 +86,7 @@ export class CloudinaryAccountsController {
   }
 
   /**
-   * POST /api/v1/cloudinary-accounts/:id/verify
+   * POST /api/cloudinary-accounts/:id/verify
    *
    * Re-pings Cloudinary with the stored (decrypted) credentials to confirm
    * they are still valid. Never returns the secret.
@@ -103,7 +101,7 @@ export class CloudinaryAccountsController {
   }
 
   /**
-   * POST /api/v1/cloudinary-accounts
+   * POST /api/cloudinary-accounts
    *
    * Adds a new Cloudinary account for the authenticated user.
    * Credentials are verified against Cloudinary before saving.

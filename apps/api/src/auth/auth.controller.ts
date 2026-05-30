@@ -24,7 +24,7 @@ import { GoogleAuthGuard } from './guards/google-auth.guard';
 import { GoogleUserProfile } from './strategies/google.strategy';
 
 @UseGuards(ThrottlerGuard)
-@Controller('v1/auth')
+@Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
@@ -60,10 +60,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAccessGuard)
-  async logout(
-    @CurrentUser() user: JwtPayload,
-    @Req() req: Request,
-  ): Promise<void> {
+  async logout(@CurrentUser() user: JwtPayload, @Req() req: Request): Promise<void> {
     const authHeader = req.headers?.['authorization'] ?? '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
     await this.authService.logout(user.sub, token);
@@ -72,18 +69,14 @@ export class AuthController {
   @Throttle({ short: { ttl: 600000, limit: 5 } })
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
-  async forgotPassword(
-    @Body() dto: ForgotPasswordDto,
-  ): Promise<{ message: string }> {
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<{ message: string }> {
     return this.authService.forgotPassword(dto);
   }
 
   @Throttle({ short: { ttl: 600000, limit: 5 } })
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
-  async resetPassword(
-    @Body() dto: ResetPasswordDto,
-  ): Promise<{ message: string }> {
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<{ message: string }> {
     return this.authService.resetPassword(dto);
   }
 

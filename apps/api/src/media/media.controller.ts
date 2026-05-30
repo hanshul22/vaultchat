@@ -26,13 +26,13 @@ import { MediaListQueryDto } from './dto/media-list-query.dto';
 import { MediaListResponseDto, MediaResponseDto } from './dto/media-response.dto';
 import { PreflightResult } from './types/preflight-result.type';
 
-@Controller('v1/media')
+@Controller('media')
 @UseGuards(JwtAccessGuard)
 export class MediaController {
   constructor(private readonly mediaService: MediaService) {}
 
   /**
-   * POST /api/v1/media/upload/preflight
+   * POST /api/media/upload/preflight
    *
    * Deterministic, quota-free check the UI runs before a large upload.
    * Returns the target account on success, or a 507-style reason on failure.
@@ -48,7 +48,7 @@ export class MediaController {
   }
 
   /**
-   * POST /api/v1/media/upload (multipart/form-data)
+   * POST /api/media/upload (multipart/form-data)
    *
    * The binary arrives as the `file` part; optional metadata (e.g.
    * storageSpaceId) arrives as additional form fields. Multer keeps the file
@@ -73,7 +73,7 @@ export class MediaController {
   }
 
   /**
-   * GET /api/v1/media?page=&limit=&type=
+   * GET /api/media?page=&limit=&type=
    *
    * Owner's media only, newest first, paginated (default limit 40, max 100).
    */
@@ -87,7 +87,7 @@ export class MediaController {
   }
 
   /**
-   * DELETE /api/v1/media/:id
+   * DELETE /api/media/:id
    *
    * Owner-only. Removes from Cloudinary, then the DB, decrementing the owning
    * account's used bytes.
