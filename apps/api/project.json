@@ -16,7 +16,14 @@
         "development": {
           "args": ["--node-env=development"]
         }
-      }
+      },
+      "inputs": [
+        "default",
+        "^default",
+        {
+          "externalDependencies": []
+        }
+      ]
     },
     "prune-lockfile": {
       "dependsOn": ["build"],
