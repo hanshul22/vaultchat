@@ -43,6 +43,10 @@ export interface MailConfig {
   apiKey: string;
 }
 
+export interface FrontendConfig {
+  authUrl: string;
+}
+
 export interface RootConfig {
   app: AppConfig;
   database: DatabaseConfig;
@@ -51,6 +55,7 @@ export interface RootConfig {
   jwt: JwtConfig;
   googleOAuth: GoogleOAuthConfig;
   mail: MailConfig;
+  frontend: FrontendConfig;
   logLevel: string;
 }
 
@@ -92,6 +97,9 @@ export const configuration = (): RootConfig => ({
   mail: {
     from: process.env['MAIL_FROM'] as string,
     apiKey: process.env['MAIL_API_KEY'] as string,
+  },
+  frontend: {
+    authUrl: process.env['FRONTEND_AUTH_URL'] as string,
   },
   logLevel: process.env['LOG_LEVEL'] as string,
 });
