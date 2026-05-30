@@ -16,6 +16,7 @@ import { CloudinaryAccountsModule } from '../cloudinary-accounts/cloudinary-acco
 import { VaultModule } from '../vault/vault.module';
 import { UsersModule } from '../users/users.module';
 import { MediaModule } from '../media/media.module';
+import { AlbumsModule } from '../albums/albums.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { MediaModule } from '../media/media.module';
     VaultModule,
     UsersModule,
     MediaModule,
+    AlbumsModule,
     ThrottlerModule.forRoot([
       {
         name: 'short',
