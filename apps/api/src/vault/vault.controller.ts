@@ -4,7 +4,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { VaultService } from './vault.service';
 import { VaultResponseDto } from './dto/vault-response.dto';
 
-@Controller('v1/vault')
+@Controller('vault')
 @UseGuards(JwtAccessGuard)
 export class VaultController {
   constructor(private readonly vaultService: VaultService) {}

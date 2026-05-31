@@ -44,18 +44,11 @@ export const envValidationSchema = Joi.object({
       'any.invalid':
         'AES_ENCRYPTION_KEY must be a base64-encoded 32-byte key. ' +
         'Generate one with: openssl rand -base64 32',
-      'string.base64':
-        'AES_ENCRYPTION_KEY must be a valid base64 string.',
+      'string.base64': 'AES_ENCRYPTION_KEY must be a valid base64 string.',
     }),
 
   // Logging
   LOG_LEVEL: Joi.string().valid('fatal', 'error', 'warn', 'info', 'debug', 'trace').default('info'),
-
-  // JWT
-  JWT_ACCESS_SECRET: Joi.string().min(32).required(),
-  JWT_REFRESH_SECRET: Joi.string().min(32).required(),
-  JWT_ACCESS_TTL: Joi.number().integer().positive().required(),
-  JWT_REFRESH_TTL: Joi.number().integer().positive().required(),
 
   // Google OAuth
   GOOGLE_OAUTH_CLIENT_ID: Joi.string().required(),

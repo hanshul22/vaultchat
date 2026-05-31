@@ -17,7 +17,7 @@ import { CloudinaryAccountsService } from './cloudinary-accounts.service';
 import { CreateCloudinaryAccountDto } from './dto/create-cloudinary-account.dto';
 import { CloudinaryAccountResponseDto } from './dto/cloudinary-account-response.dto';
 
-@Controller('v1/cloudinary-accounts')
+@Controller('cloudinary-accounts')
 @UseGuards(JwtAccessGuard)
 export class CloudinaryAccountsController {
   constructor(private readonly service: CloudinaryAccountsService) {}
@@ -48,9 +48,7 @@ export class CloudinaryAccountsController {
    * No secret or encrypted secret is ever included in the response.
    */
   @Get()
-  async findAll(
-    @CurrentUser() user: JwtPayload,
-  ): Promise<CloudinaryAccountResponseDto[]> {
+  async findAll(@CurrentUser() user: JwtPayload): Promise<CloudinaryAccountResponseDto[]> {
     return this.service.findAllForUser(user.sub);
   }
 
