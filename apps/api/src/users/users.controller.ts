@@ -4,7 +4,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UsersService } from './users.service';
 import { UserResponseDto } from './dto/user-response.dto';
 
-@Controller('v1/users')
+@Controller('users')
 @UseGuards(JwtAccessGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
