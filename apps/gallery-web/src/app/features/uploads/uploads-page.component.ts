@@ -10,10 +10,12 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { toSignal } from '@angular/core/rxjs-interop';
 
+import { RouterLink } from '@angular/router';
 import { UploadService } from '../../core/services/upload.service';
 import { VideoProcessingService } from '../../core/services/video-processing.service';
 import { UploadQueueItem, UploadQueueStatus } from '../../core/models/upload-queue-item.model';
 import { PreflightRejectReason } from '../../core/models/media-upload-preflight.model';
+
 import {
   VideoProbeResult,
   MAX_VIDEO_HEIGHT_PX,
@@ -101,7 +103,7 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
 @Component({
   selector: 'app-uploads-page',
   standalone: true,
-  imports: [DatePipe, DecimalPipe],
+  imports: [DatePipe, DecimalPipe, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="uploads-page">
@@ -162,8 +164,8 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
             @case ('idle') {
               <span class="ffmpeg-banner__icon">🎬</span>
               <span>
-                Video processing (ffmpeg.wasm) will be loaded when needed. Videos are uploaded
-                directly for now.
+                Video processing engine (ffmpeg.wasm) will load automatically when a video is
+                queued.
               </span>
             }
             @case ('loading') {
@@ -367,13 +369,7 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
 
                   <!-- Preflight OK -->
                   @if (item.status === 'ready' && item.preflightResult) {
-                    <p class="queue-item__status queue-item__status--ok">
-                      ✓ Preflight passed — target:
-                      {{ item.preflightResult.targetAccountRole }}
-                      @if (item.preflightResult.targetSecondaryOrder) {
-                        slot {{ item.preflightResult.targetSecondaryOrder }}
-                      }
-                    </p>
+                    <p class="queue-item__status queue-item__status--ok">✓ Ready to upload</p>
                   }
 
                   <!-- Uploading -->
@@ -510,11 +506,9 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
           @if (hasReadyItems() && !isUploadingAny()) {
             <div class="queue__notice" role="note">
               <strong
-                >{{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready for direct
-                upload.</strong
+                >{{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready to upload.</strong
               >
-              Optional ffmpeg.wasm compression for videos will be added in the next phase — files
-              are uploaded as-is for now.
+              Videos have been processed and checked. Click "Upload all" to send them to your Vault.
             </div>
           }
         </section>
@@ -1079,13 +1073,16 @@ export class UploadsPageComponent {
 
     this.queue.update((q) => [...q, ...newItems]);
 
-    // For video files: trigger probe immediately (which also ensures ffmpeg
-    // is loaded). For image files: nothing extra needed.
-    const videoItems = newItems.filter(
-      (i) => i.status === 'selected' && i.mimeType.startsWith('video/'),
-    );
-    for (const item of videoItems) {
-      void this.probeOne(item.clientId);
+    // Auto-start the pipeline for each valid item:
+    //   video → probe → preflight → process → (upload on demand)
+    //   image → preflight → (upload on demand)
+    for (const item of newItems) {
+      if (item.status !== 'selected') continue;
+      if (item.mimeType.startsWith('video/')) {
+        void this.probeOne(item.clientId);
+      } else {
+        this.runPreflightOne(item.clientId);
+      }
     }
   }
 
@@ -1104,6 +1101,9 @@ export class UploadsPageComponent {
    * Ensures ffmpeg is loaded first (idempotent). Non-video files are skipped.
    * Probe failure is non-fatal — the item moves to 'probeError' and the user
    * can still proceed to preflight and upload.
+   *
+   * On success, automatically chains into preflight (PRD order:
+   * probe → preflight → process → upload).
    */
   async probeOne(clientId: string): Promise<void> {
     const item = this.queue().find((i) => i.clientId === clientId);
@@ -1122,12 +1122,17 @@ export class UploadsPageComponent {
     try {
       const result = await this.videoProcessing.probeVideo(item.file);
       this.patchItem(clientId, { status: 'probed', probeResult: result });
+      // Auto-chain: preflight runs before processing (PRD §6).
+      this.runPreflightOne(clientId);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not read video metadata.';
       this.patchItem(clientId, {
         status: 'probeError',
         probeErrorMessage: message,
       });
+      // Even on probe failure, auto-run preflight so the user doesn't have
+      // to manually click Check.
+      this.runPreflightOne(clientId);
     }
   }
 
@@ -1141,7 +1146,8 @@ export class UploadsPageComponent {
    * Progress events flow through VideoProcessingService.progress$ and are
    * also stored per-item in processingProgress for the UI.
    *
-   * On success the item moves to 'processed' and processedFile is set.
+   * On success the item moves to 'processed' and processedFile is set,
+   * then automatically chains into uploadOne (the preflight already passed).
    * On failure the item moves to 'processError' with a clear message.
    */
   async processOne(clientId: string): Promise<void> {
@@ -1177,6 +1183,14 @@ export class UploadsPageComponent {
         processedFile: result.outputFile,
         processingProgress: null,
       });
+
+      // Auto-chain: move straight to ready and upload.
+      // Re-read the item to get the saved preflightResult.
+      const processed = this.queue().find((i) => i.clientId === clientId);
+      if (processed?.preflightResult) {
+        this.patchItem(clientId, { status: 'ready' });
+        void this.uploadOne(clientId);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Video processing failed.';
       this.patchItem(clientId, {
@@ -1193,7 +1207,13 @@ export class UploadsPageComponent {
 
   runPreflightAll(): void {
     const pending = this.queue().filter(
-      (i) => i.status === 'selected' || i.status === 'uploadError',
+      (i) =>
+        i.status === 'selected' ||
+        i.status === 'probed' ||
+        i.status === 'probeError' ||
+        i.status === 'processed' ||
+        i.status === 'processError' ||
+        i.status === 'uploadError',
     );
     for (const item of pending) {
       this.runPreflightOne(item.clientId);
@@ -1226,6 +1246,14 @@ export class UploadsPageComponent {
       next: (result) => {
         if (result.canUpload) {
           this.patchItem(clientId, { status: 'ready', preflightResult: result });
+
+          // Auto-chain: for video files that haven't been processed yet,
+          // kick off processing now that preflight has confirmed capacity.
+          // (PRD order: probe → preflight → process → upload)
+          const current = this.queue().find((i) => i.clientId === clientId);
+          if (current && current.mimeType.startsWith('video/') && !current.processedFile) {
+            void this.processOne(clientId);
+          }
         } else {
           this.patchItem(clientId, {
             status: 'uploadError',

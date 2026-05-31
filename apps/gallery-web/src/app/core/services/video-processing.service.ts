@@ -237,7 +237,9 @@ export class VideoProcessingService implements OnDestroy {
       const outputBytes =
         outputData instanceof Uint8Array ? outputData : new TextEncoder().encode(outputData);
 
-      const outputFile = new File([outputBytes], outputName, { type: 'video/mp4' });
+      const outputFile = new File([outputBytes as Uint8Array<ArrayBuffer>], outputName, {
+        type: 'video/mp4',
+      });
 
       // Re-probe the output to get accurate output metadata.
       const outputProbe = await this.probeNative(outputFile);
