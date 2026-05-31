@@ -69,6 +69,10 @@ export class MediaController {
   ): Promise<MediaResponseDto> {
     return this.mediaService.upload(user.sub, file, {
       storageSpaceId: body.storageSpaceId ?? null,
+      mediaId: body.mediaId,
+      partIndex: body.partIndex,
+      totalParts: body.totalParts,
+      totalFileSize: body.totalFileSize,
     });
   }
 

@@ -114,6 +114,16 @@ const makeService = (accounts: FakeAccount[]) => {
     createQueryBuilder: () => makeQueryBuilder(db),
   } as unknown as Repository<Media>;
 
+  // Minimal MediaPart repository mock — multipart paths are not exercised
+  // by the existing single-part upload tests.
+  const mediaPartRepo = {
+    create: jest.fn((input: unknown) => input),
+    save: jest.fn(async (input: unknown) => input),
+    findOne: jest.fn(async () => null),
+    find: jest.fn(async () => []),
+    delete: jest.fn(async () => ({ affected: 0 })),
+  } as unknown as Repository<import('./entities/media-part.entity').MediaPart>;
+
   const dataSource = {
     transaction: jest.fn(async <T>(cb: (manager: unknown) => Promise<T>): Promise<T> => {
       const manager = {
@@ -152,6 +162,7 @@ const makeService = (accounts: FakeAccount[]) => {
 
   const service = new MediaService(
     mediaRepo,
+    mediaPartRepo,
     accountRepo,
     dataSource,
     aesGcm,
