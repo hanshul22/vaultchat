@@ -19,6 +19,9 @@ import { AddStorageSpaceMemberDto } from './dto/add-storage-space-member.dto';
 import { AssignMediaToSpaceDto } from './dto/assign-media-to-space.dto';
 import { CreateStorageSpaceDto } from './dto/create-storage-space.dto';
 import { ListStorageSpacesQueryDto } from './dto/list-storage-spaces-query.dto';
+import { StorageSpaceDetailResponseDto } from './dto/storage-space-detail-response.dto';
+import { StorageSpaceMemberResponseDto } from './dto/storage-space-member-response.dto';
+import { StorageSpaceResponseDto } from './dto/storage-space-response.dto';
 import { UpdateStorageSpaceDto } from './dto/update-storage-space.dto';
 import { UpdateStorageSpaceMemberRoleDto } from './dto/update-storage-space-member-role.dto';
 import { StorageSpaceMemberRole } from './enums/storage-space-member-role.enum';
@@ -33,19 +36,28 @@ export class StorageSpacesController {
   /** POST /api/v1/storage-spaces — create a new space (caller becomes owner) */
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  create(@CurrentUser() user: JwtPayload, @Body() dto: CreateStorageSpaceDto) {
+  create(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateStorageSpaceDto,
+  ): Promise<StorageSpaceResponseDto> {
     return this.storageSpacesService.create(user.sub, dto);
   }
 
   /** GET /api/v1/storage-spaces — list spaces the caller owns or is a member of */
   @Get()
-  findAll(@CurrentUser() user: JwtPayload, @Query() query: ListStorageSpacesQueryDto) {
+  findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query() query: ListStorageSpacesQueryDto,
+  ): Promise<StorageSpaceResponseDto[]> {
     return this.storageSpacesService.findAllForUser(user.sub, query);
   }
 
   /** GET /api/v1/storage-spaces/:id */
   @Get(':id')
-  findOne(@CurrentUser() user: JwtPayload, @Param('id', ParseUUIDPipe) id: string) {
+  findOne(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<StorageSpaceDetailResponseDto> {
     return this.storageSpacesService.findOneForUser(id, user.sub);
   }
 
@@ -55,14 +67,14 @@ export class StorageSpacesController {
     @CurrentUser() user: JwtPayload,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateStorageSpaceDto,
-  ) {
+  ): Promise<StorageSpaceResponseDto> {
     return this.storageSpacesService.update(id, user.sub, dto);
   }
 
   /** DELETE /api/v1/storage-spaces/:id — owner only (enforced in service) */
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@CurrentUser() user: JwtPayload, @Param('id', ParseUUIDPipe) id: string) {
+  remove(@CurrentUser() user: JwtPayload, @Param('id', ParseUUIDPipe) id: string): Promise<void> {
     return this.storageSpacesService.remove(id, user.sub);
   }
 
@@ -75,7 +87,7 @@ export class StorageSpacesController {
     @CurrentUser() user: JwtPayload,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AddStorageSpaceMemberDto,
-  ) {
+  ): Promise<StorageSpaceMemberResponseDto> {
     return this.storageSpacesService.addMember(id, user.sub, dto);
   }
 
@@ -86,7 +98,7 @@ export class StorageSpacesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Param('memberUserId', ParseUUIDPipe) memberUserId: string,
     @Body() dto: UpdateStorageSpaceMemberRoleDto,
-  ) {
+  ): Promise<StorageSpaceMemberResponseDto> {
     return this.storageSpacesService.updateMemberRole(id, user.sub, memberUserId, dto);
   }
 
@@ -97,7 +109,7 @@ export class StorageSpacesController {
     @CurrentUser() user: JwtPayload,
     @Param('id', ParseUUIDPipe) id: string,
     @Param('memberUserId', ParseUUIDPipe) memberUserId: string,
-  ) {
+  ): Promise<void> {
     return this.storageSpacesService.removeMember(id, user.sub, memberUserId);
   }
 
@@ -108,14 +120,14 @@ export class StorageSpacesController {
    * Requires at least EDITOR role (owner always passes via SpaceRoleGuard).
    */
   @Post(':spaceId/media')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   @UseGuards(SpaceRoleGuard)
   @RequireSpaceRole(StorageSpaceMemberRole.EDITOR)
   assignMedia(
     @CurrentUser() user: JwtPayload,
     @Param('spaceId', ParseUUIDPipe) spaceId: string,
     @Body() dto: AssignMediaToSpaceDto,
-  ) {
+  ): Promise<{ updated: number }> {
     return this.storageSpacesService.assignMedia(spaceId, user.sub, dto);
   }
 }
