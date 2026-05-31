@@ -1330,16 +1330,12 @@ export class UploadsPageComponent {
     });
 
     try {
-      const response = await this.uploadService.uploadChunked(
-        splitResult,
-        {},
-        (completedIndex, _totalParts) => {
-          // Update progress after each chunk completes.
-          this.patchItem(clientId, {
-            currentChunkIndex: completedIndex + 1,
-          });
-        },
-      );
+      const response = await this.uploadService.uploadChunked(splitResult, {}, (completedIndex) => {
+        // Update progress after each chunk completes.
+        this.patchItem(clientId, {
+          currentChunkIndex: completedIndex + 1,
+        });
+      });
 
       this.patchItem(clientId, {
         status: 'uploaded',

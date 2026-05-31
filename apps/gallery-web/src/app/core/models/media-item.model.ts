@@ -65,6 +65,26 @@ export function mediaFamily(mimeType: string): MediaFamily {
 }
 
 /**
+ * Derives a Cloudinary HLS streaming URL from a stored video delivery URL.
+ *
+ * Cloudinary serves HLS manifests by replacing the file extension with `.m3u8`
+ * and adding `sp_auto` (streaming profile) to the transformation segment.
+ *
+ * Example:
+ *   Input:  https://res.cloudinary.com/demo/video/upload/v1/vaultchat/user/abc.mp4
+ *   Output: https://res.cloudinary.com/demo/video/upload/sp_auto/v1/vaultchat/user/abc.m3u8
+ *
+ * Returns null when the URL does not match the expected Cloudinary video pattern.
+ *
+ * @param url  The canonical video delivery URL stored in the media row.
+ */
+export function cloudinaryHlsUrl(url: string): string | null {
+  if (!url.includes('/video/upload/')) return null;
+
+  return url.replace(/\/video\/upload\//, '/video/upload/sp_auto/').replace(/\.[^./?#]+$/, '.m3u8');
+}
+
+/**
  * Derives a Cloudinary thumbnail URL from a stored delivery URL by injecting
  * a transformation segment before the version/public_id portion.
  *
@@ -74,14 +94,12 @@ export function mediaFamily(mimeType: string): MediaFamily {
  * We insert the transformation string after `/upload/` so the CDN serves a
  * resized, auto-formatted thumbnail instead of the full-resolution asset.
  *
- * @param url     The canonical URL stored in the media row.
- * @param transform  Cloudinary transformation string, e.g. "w_400,h_400,c_fill,q_auto,f_auto".
+ * @param url       The canonical URL stored in the media row.
+ * @param transform Cloudinary transformation string, e.g. "w_400,h_400,c_fill,q_auto,f_auto".
  */
 export function cloudinaryThumbUrl(
   url: string,
   transform = 'w_400,h_400,c_fill,q_auto,f_auto',
 ): string {
-  // Insert the transform after the resource-type/delivery-type segment.
-  // Handles both /image/upload/ and /video/upload/ paths.
   return url.replace(/\/(image|video)\/upload\//, `/$1/upload/${transform}/`);
 }
