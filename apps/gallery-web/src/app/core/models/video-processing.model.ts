@@ -22,6 +22,22 @@ export interface FfmpegProgress {
 /** Maximum height (px) above which a video requires downscaling. Per PRD: 1080. */
 export const MAX_VIDEO_HEIGHT_PX = 1080;
 
+/** H.264 CRF value for compression quality. Per PRD: 18. */
+export const VIDEO_CRF = 18;
+
+/**
+ * Per-file processing progress, emitted while ffmpeg is transcoding.
+ * Extends FfmpegProgress with a human-readable stage label.
+ */
+export interface VideoProcessingProgress {
+  /** Ratio of work completed, 0–1. May be NaN for indeterminate operations. */
+  ratio: number;
+  /** Elapsed time in seconds reported by ffmpeg. */
+  time: number;
+  /** Human-readable stage label shown in the UI. */
+  stage: 'transcoding';
+}
+
 /**
  * Metadata extracted from a video file by the probe step.
  *
@@ -101,10 +117,9 @@ export interface VideoProcessingResult {
 }
 
 /**
- * Reason a video processing operation was skipped or deferred.
+ * Reason a video processing operation was skipped.
  * Used by the service to communicate why it returned the original file.
  */
 export type ProcessingSkipReason =
   | 'ffmpeg_not_ready' // Engine not yet loaded
-  | 'not_implemented' // Method stub — real logic comes in the next step
   | 'no_transcoding_needed'; // File already meets quality/size requirements

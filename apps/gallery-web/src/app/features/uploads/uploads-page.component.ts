@@ -14,7 +14,11 @@ import { UploadService } from '../../core/services/upload.service';
 import { VideoProcessingService } from '../../core/services/video-processing.service';
 import { UploadQueueItem, UploadQueueStatus } from '../../core/models/upload-queue-item.model';
 import { PreflightRejectReason } from '../../core/models/media-upload-preflight.model';
-import { VideoProbeResult } from '../../core/models/video-processing.model';
+import {
+  VideoProbeResult,
+  MAX_VIDEO_HEIGHT_PX,
+  VIDEO_CRF,
+} from '../../core/models/video-processing.model';
 
 // ── MIME allowlist (mirrors backend media.constants.ts exactly) ───────────────
 const ALLOWED_MIME_TYPES = [
@@ -247,11 +251,20 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     @case ('uploading') {
                       <span class="queue-item__spinner queue-item__spinner--upload"></span>
                     }
+                    @case ('processing') {
+                      <span class="queue-item__spinner queue-item__spinner--process"></span>
+                    }
                     @case ('probed') {
                       🎬
                     }
+                    @case ('processed') {
+                      ✨
+                    }
                     @case ('probeError') {
                       ⚠️
+                    }
+                    @case ('processError') {
+                      ❌
                     }
                     @case ('ready') {
                       ✅
@@ -306,6 +319,33 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </p>
                   }
 
+                  <!-- Processing in progress -->
+                  @if (item.status === 'processing') {
+                    <p class="queue-item__status queue-item__status--info">
+                      Transcoding…
+                      @if (item.processingProgress && item.processingProgress.ratio > 0) {
+                        {{ item.processingProgress.ratio * 100 | number: '1.0-0' }}%
+                      }
+                    </p>
+                  }
+
+                  <!-- Processing succeeded -->
+                  @if (item.status === 'processed' && item.processedFile) {
+                    <p class="queue-item__status queue-item__status--ok">
+                      ✨ Processed — {{ formatBytes(item.processedFile.size) }}
+                      @if (item.probeResult) {
+                        (was {{ formatBytes(item.sizeBytes) }})
+                      }
+                    </p>
+                  }
+
+                  <!-- Processing error -->
+                  @if (item.status === 'processError' && item.processErrorMessage) {
+                    <p class="queue-item__status queue-item__status--err">
+                      Processing failed: {{ item.processErrorMessage }}
+                    </p>
+                  }
+
                   <!-- Preflight OK -->
                   @if (item.status === 'ready' && item.preflightResult) {
                     <p class="queue-item__status queue-item__status--ok">
@@ -343,10 +383,37 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
 
                 <!-- Per-item actions -->
                 <div class="queue-item__actions">
-                  <!-- Check (preflight) — available from selected, probed, or probeError -->
+                  <!-- Process (transcode) — available for probed video files -->
+                  @if (item.status === 'probed' && item.mimeType.startsWith('video/')) {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--primary"
+                      [disabled]="isBusy()"
+                      (click)="processOne(item.clientId)"
+                      [attr.aria-label]="'Process ' + item.filename"
+                    >
+                      Process
+                    </button>
+                  }
+
+                  <!-- Retry processing after failure -->
+                  @if (item.status === 'processError') {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--ghost"
+                      [disabled]="isBusy()"
+                      (click)="processOne(item.clientId)"
+                      [attr.aria-label]="'Retry processing ' + item.filename"
+                    >
+                      Retry
+                    </button>
+                  }
+
+                  <!-- Check (preflight) — available from probed, processed, or probeError -->
                   @if (
                     item.status === 'selected' ||
                     item.status === 'probed' ||
+                    item.status === 'processed' ||
                     item.status === 'probeError'
                   ) {
                     <button
@@ -386,9 +453,10 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Remove (not while probing/uploading/checking) -->
+                  <!-- Remove (not while probing/processing/uploading/checking) -->
                   @if (
                     item.status !== 'probing' &&
+                    item.status !== 'processing' &&
                     item.status !== 'uploading' &&
                     item.status !== 'checking'
                   ) {
@@ -615,6 +683,18 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         border-color: #fde68a;
         background: #fffbeb;
       }
+      .queue-item[data-status='processing'] {
+        border-color: #c4b5fd;
+        background: #f5f3ff;
+      }
+      .queue-item[data-status='processed'] {
+        border-color: #6ee7b7;
+        background: #ecfdf5;
+      }
+      .queue-item[data-status='processError'] {
+        border-color: #fecaca;
+        background: #fef2f2;
+      }
 
       .queue-item__icon {
         font-size: 1.25rem;
@@ -643,6 +723,11 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
       .queue-item__spinner--probe {
         border-color: #fde68a;
         border-top-color: #d97706;
+      }
+
+      .queue-item__spinner--process {
+        border-color: #ddd6fe;
+        border-top-color: #7c3aed;
       }
 
       @keyframes spin {
@@ -873,9 +958,15 @@ export class UploadsPageComponent {
     return this.queue().some((i) => i.status === 'probing');
   }
 
+  isProcessingAny(): boolean {
+    return this.queue().some((i) => i.status === 'processing');
+  }
+
   /** True when any async operation is in flight — disables bulk actions. */
   isBusy(): boolean {
-    return this.isCheckingAny() || this.isUploadingAny() || this.isProbingAny();
+    return (
+      this.isCheckingAny() || this.isUploadingAny() || this.isProbingAny() || this.isProcessingAny()
+    );
   }
 
   hasPendingItems(): boolean {
@@ -883,7 +974,9 @@ export class UploadsPageComponent {
       (i) =>
         i.status === 'selected' ||
         i.status === 'probed' ||
+        i.status === 'processed' ||
         i.status === 'probeError' ||
+        i.status === 'processError' ||
         i.status === 'uploadError',
     );
   }
@@ -1014,6 +1107,64 @@ export class UploadsPageComponent {
     }
   }
 
+  // ── Process ──────────────────────────────────────────────────────────────
+
+  /**
+   * Transcodes a single video file using the PRD pipeline:
+   *   H.264 CRF 18, downscale to 1080p if height > 1080.
+   *
+   * Requires ffmpeg to be loaded (load() is called automatically).
+   * Progress events flow through VideoProcessingService.progress$ and are
+   * also stored per-item in processingProgress for the UI.
+   *
+   * On success the item moves to 'processed' and processedFile is set.
+   * On failure the item moves to 'processError' with a clear message.
+   */
+  async processOne(clientId: string): Promise<void> {
+    const item = this.queue().find((i) => i.clientId === clientId);
+    if (!item || !item.mimeType.startsWith('video/')) return;
+    if (item.status === 'processing' || item.status === 'uploading') return;
+
+    this.patchItem(clientId, {
+      status: 'processing',
+      processingProgress: null,
+      processErrorMessage: undefined,
+      processedFile: null,
+    });
+
+    // Subscribe to progress events and route them to the queue item.
+    const progressSub = this.videoProcessing.progress$.subscribe((p) => {
+      this.patchItem(clientId, {
+        processingProgress: { ratio: p.ratio, time: p.time, stage: 'transcoding' },
+      });
+    });
+
+    try {
+      await this.videoProcessing.load();
+
+      const result = await this.videoProcessing.processVideo({
+        file: item.file,
+        maxHeightPx: MAX_VIDEO_HEIGHT_PX,
+        crf: VIDEO_CRF,
+      });
+
+      this.patchItem(clientId, {
+        status: 'processed',
+        processedFile: result.outputFile,
+        processingProgress: null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Video processing failed.';
+      this.patchItem(clientId, {
+        status: 'processError',
+        processErrorMessage: message,
+        processingProgress: null,
+      });
+    } finally {
+      progressSub.unsubscribe();
+    }
+  }
+
   // ── Preflight ───────────────────────────────────────────────────────────
 
   runPreflightAll(): void {
@@ -1031,9 +1182,14 @@ export class UploadsPageComponent {
       !item ||
       item.status === 'checking' ||
       item.status === 'uploading' ||
-      item.status === 'probing'
+      item.status === 'probing' ||
+      item.status === 'processing'
     )
       return;
+
+    // Use the processed file size for preflight when available, so the
+    // server checks capacity against the actual bytes that will be uploaded.
+    const sizeForPreflight = item.processedFile?.size ?? item.sizeBytes;
 
     this.patchItem(clientId, {
       status: 'checking',
@@ -1042,7 +1198,7 @@ export class UploadsPageComponent {
       uploadedMedia: undefined,
     });
 
-    this.uploadService.checkPreflight(item.sizeBytes, item.mimeType).subscribe({
+    this.uploadService.checkPreflight(sizeForPreflight, item.mimeType).subscribe({
       next: (result) => {
         if (result.canUpload) {
           this.patchItem(clientId, { status: 'ready', preflightResult: result });
@@ -1087,7 +1243,10 @@ export class UploadsPageComponent {
 
     this.patchItem(clientId, { status: 'uploading', errorMessage: undefined });
 
-    this.uploadService.uploadFile(item.file).subscribe({
+    // Use the processed (transcoded) file when available; fall back to original.
+    const fileToUpload = item.processedFile ?? item.file;
+
+    this.uploadService.uploadFile(fileToUpload).subscribe({
       next: (response) => {
         this.patchItem(clientId, { status: 'uploaded', uploadedMedia: response });
       },

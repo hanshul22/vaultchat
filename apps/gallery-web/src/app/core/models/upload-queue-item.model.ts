@@ -1,6 +1,6 @@
 import { MediaUploadPreflightResponse } from './media-upload-preflight.model';
 import { MediaUploadResponse } from './media-upload-response.model';
-import { VideoProbeResult } from './video-processing.model';
+import { VideoProbeResult, VideoProcessingProgress } from './video-processing.model';
 
 /**
  * Status of a single file in the upload queue.
@@ -10,9 +10,12 @@ import { VideoProbeResult } from './video-processing.model';
  *   selected   → probing     → probed        (video probe succeeded)
  *   selected   → probing     → probeError    (video probe failed)
  *   selected   → checking    → ready         (image: skip probe, go straight to preflight)
- *   probed     → checking    → ready         (preflight passed)
- *   probed     → checking    → uploadError   (preflight rejected / network)
+ *   probed     → processing  → processed     (video transcoding succeeded)
+ *   probed     → processing  → processError  (video transcoding failed)
+ *   probed     → checking    → ready         (user skips processing, goes straight to preflight)
+ *   processed  → checking    → ready         (preflight passed on processed file)
  *   probeError → checking    → ready         (user retried preflight despite probe failure)
+ *   processError → processing → processed    (retry transcoding)
  *   ready      → uploading   → uploaded      (upload succeeded)
  *   ready      → uploading   → uploadError   (upload failed)
  *   uploadError → uploading  → uploaded      (retry succeeded)
@@ -24,8 +27,11 @@ export type UploadQueueStatus =
   | 'probing' // Video probe in flight
   | 'probed' // Video probe succeeded — metadata available
   | 'probeError' // Video probe failed — can still proceed to preflight
+  | 'processing' // ffmpeg transcoding in flight
+  | 'processed' // Transcoding succeeded — processedFile is ready for upload
+  | 'processError' // Transcoding failed — retryable
   | 'checking' // Preflight HTTP call in flight
-  | 'ready' // Preflight passed — file can be uploaded directly
+  | 'ready' // Preflight passed — file can be uploaded
   | 'uploading' // POST /api/v1/media/upload in flight
   | 'uploaded' // Upload succeeded — media row created
   | 'uploadError'; // Preflight rejected, upload failed, or client validation failed
@@ -66,8 +72,8 @@ export interface UploadQueueItem {
   // ── Video probe fields (video files only) ─────────────────────────────────
 
   /**
-   * Probe result populated when status is 'probed', 'checking', 'ready',
-   * 'uploading', 'uploaded', or 'uploadError' (after a successful probe).
+   * Probe result populated when status is 'probed', 'processing', 'processed',
+   * 'checking', 'ready', 'uploading', 'uploaded', or 'uploadError'.
    * Null for image files and when probe has not yet run.
    */
   probeResult?: VideoProbeResult | null;
@@ -77,6 +83,27 @@ export interface UploadQueueItem {
    * The user can still proceed to preflight/upload despite a probe failure.
    */
   probeErrorMessage?: string;
+
+  // ── Video processing fields (video files only) ────────────────────────────
+
+  /**
+   * Live progress during transcoding, populated while status === 'processing'.
+   * Null when not currently processing.
+   */
+  processingProgress?: VideoProcessingProgress | null;
+
+  /**
+   * Human-readable error message shown when status === 'processError'.
+   * The user can retry processing.
+   */
+  processErrorMessage?: string;
+
+  /**
+   * The transcoded output File, populated when status is 'processed', 'checking',
+   * 'ready', 'uploading', or 'uploaded'. When present, the upload step uses this
+   * file instead of the original `file` reference.
+   */
+  processedFile?: File | null;
 
   // ── Preflight / upload fields ──────────────────────────────────────────────
 

@@ -27,13 +27,15 @@ const CORE_MT_BASE = 'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm';
  *     1. HTMLVideoElement (always available) → width, height, duration.
  *     2. ffprobe via ffmpeg.wasm (when loaded) → codec, bitrate.
  *   This ensures probe results are available even when ffmpeg fails to load.
- * • processVideo() remains a stub — transcoding is implemented in the next step.
+ * • processVideo() implements the full PRD pipeline:
+ *     - H.264 (libx264), CRF 18.
+ *     - Downscale to 1080p max height when source exceeds it (aspect preserved).
+ *     - Progress events flow through progress$.
  *
- * ── PRD pipeline (next step) ──────────────────────────────────────────────
+ * ── PRD pipeline ──────────────────────────────────────────────────────────
  *   1. ✅ Probe: read resolution, codec, duration, bitrate.
- *   2. Decide: skip transcoding if already H.264 ≤ 1080p and ≤ 100 MB.
- *   3. Transcode: H.264 CRF 18, downscale to 1080p if needed.
- *   4. (Later) Split: if output > 100 MB, chunk for multipart upload.
+ *   2. ✅ Transcode: H.264 CRF 18, downscale to 1080p if needed.
+ *   3. (Later) Split: if output > 100 MB, chunk for multipart upload.
  */
 @Injectable({ providedIn: 'root' })
 export class VideoProcessingService implements OnDestroy {
@@ -155,19 +157,107 @@ export class VideoProcessingService implements OnDestroy {
 
   /**
    * Processes a video file per the PRD pipeline:
-   *   detect resolution → downscale if >1080p → compress H.264 CRF 18.
+   *   - Probe the file to determine resolution.
+   *   - If height > 1080p: downscale to 1080p, preserve aspect ratio.
+   *   - Encode with H.264 (libx264), CRF 18.
+   *   - Return the processed File ready for the existing upload flow.
    *
-   * ── NOT IMPLEMENTED YET ──
-   * Real transcoding logic will be added in the next step.
+   * Progress events are emitted through `progress$` during transcoding.
    *
-   * @throws {Error} Always — "VideoProcessingService.processVideo: not implemented yet"
+   * @param request  Processing parameters (file, maxHeightPx, crf).
+   * @returns        VideoProcessingResult with the output File and metadata.
+   * @throws         When ffmpeg is not loaded or transcoding fails.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async processVideo(_request: VideoProcessingRequest): Promise<VideoProcessingResult> {
-    throw new Error(
-      'VideoProcessingService.processVideo: not implemented yet. ' +
-        'Real transcoding logic (H.264 CRF 18, 1080p downscale) will be added in the next step.',
-    );
+  async processVideo(request: VideoProcessingRequest): Promise<VideoProcessingResult> {
+    if (!this.isReady || !this.ffmpegInstance) {
+      throw new Error(
+        'VideoProcessingService.processVideo: ffmpeg is not loaded. ' +
+          'Call load() and wait for loadState to become "ready" before processing.',
+      );
+    }
+
+    const { file, maxHeightPx, crf } = request;
+
+    // Probe to determine whether downscaling is needed.
+    const probe = await this.probeVideo(file);
+
+    const ffmpeg = this.ffmpegInstance as {
+      writeFile: (path: string, data: Uint8Array) => Promise<unknown>;
+      exec: (args: string[], timeout?: number) => Promise<number>;
+      readFile: (path: string, encoding?: string) => Promise<string | Uint8Array>;
+      deleteFile: (path: string) => Promise<unknown>;
+    };
+
+    // Use a timestamp-based name to avoid collisions when multiple files
+    // are processed concurrently (each gets its own FS namespace).
+    const ts = Date.now();
+    const ext = file.name.split('.').pop() ?? 'mp4';
+    const inputName = `input_${ts}.${ext}`;
+    const outputName = `output_${ts}.mp4`;
+
+    try {
+      // Write the source file into the ffmpeg virtual FS.
+      const buffer = await file.arrayBuffer();
+      await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
+
+      // Build the ffmpeg argument list.
+      // -vf scale: use -2 on width so it stays divisible by 2 (required by libx264).
+      // When no downscale is needed, omit the scale filter entirely.
+      const args: string[] = ['-i', inputName];
+
+      if (probe.requiresDownscale) {
+        const targetH = Math.min(maxHeightPx, MAX_VIDEO_HEIGHT_PX);
+        args.push('-vf', `scale=-2:${targetH}`);
+      }
+
+      args.push(
+        '-c:v',
+        'libx264',
+        '-crf',
+        String(crf),
+        '-preset',
+        'fast', // balance speed vs. compression
+        '-c:a',
+        'aac', // re-encode audio to AAC for broad compatibility
+        '-movflags',
+        '+faststart', // move moov atom to front for streaming
+        outputName,
+      );
+
+      const exitCode = await ffmpeg.exec(args);
+      if (exitCode !== 0) {
+        throw new Error(`ffmpeg exited with code ${exitCode} while processing "${file.name}".`);
+      }
+
+      // Read the output file from the virtual FS.
+      const outputData = await ffmpeg.readFile(outputName);
+      const outputBytes =
+        outputData instanceof Uint8Array ? outputData : new TextEncoder().encode(outputData);
+
+      const outputFile = new File([outputBytes], outputName, { type: 'video/mp4' });
+
+      // Re-probe the output to get accurate output metadata.
+      const outputProbe = await this.probeNative(outputFile);
+      const outputProbeResult: VideoProbeResult = {
+        durationSeconds: outputProbe.durationSeconds,
+        width: outputProbe.width,
+        height: outputProbe.height,
+        codec: 'h264',
+        bitrate: null, // not re-probed via ffprobe to keep this step fast
+        requiresDownscale: false,
+        targetMaxHeightPx: outputProbe.height,
+      };
+
+      return {
+        outputFile,
+        wasTranscoded: true,
+        outputSizeBytes: outputBytes.byteLength,
+        probe: outputProbeResult,
+      };
+    } finally {
+      await ffmpeg.deleteFile(inputName).catch(() => undefined);
+      await ffmpeg.deleteFile(outputName).catch(() => undefined);
+    }
   }
 
   /**
