@@ -6,6 +6,7 @@ import {
   OnDestroy,
   OnInit,
   signal,
+  computed,
   ViewChild,
 } from '@angular/core';
 import { DatePipe } from '@angular/common';
@@ -22,17 +23,22 @@ interface MediaCard extends MediaItem {
 
 type LoadState = 'loading' | 'loaded' | 'error';
 
+/** Per-item delete outcome tracked during a bulk delete run. */
+interface DeleteFailure {
+  id: string;
+  mimeType: string;
+}
+
 /**
- * /gallery — real API-backed media grid.
+ * /gallery — real API-backed media grid with bulk select and bulk delete.
  *
  * Fetches page 1 of the authenticated user's media on init, renders a
- * responsive thumbnail grid, and distinguishes images from videos with a
- * type badge. Thumbnails use the Cloudinary w_400,h_400,c_fill,q_auto,f_auto
- * transform so the CDN serves compact previews.
- *
- * Video cards open an inline player on click. The player uses native HLS on
- * Safari/iOS, HLS.js on other browsers, and falls back to direct MP4 when
- * HLS is not available.
+ * responsive thumbnail grid, and supports:
+ *  - Selection mode toggled via a toolbar button or keyboard (Enter/Space)
+ *  - Individual card selection via checkbox or keyboard
+ *  - Bulk delete with a confirmation dialog before any destructive action
+ *  - Sequential delete execution reusing the existing DELETE /media/:id endpoint
+ *  - Per-item failure reporting without silently swallowing errors
  */
 @Component({
   selector: 'app-gallery-page',
@@ -49,7 +55,81 @@ type LoadState = 'loading' | 'loaded' | 'error';
             {{ meta()?.total ?? 0 }} item{{ (meta()?.total ?? 0) === 1 ? '' : 's' }}
           </span>
         }
+
+        <!-- Selection mode toggle -->
+        @if (loadState() === 'loaded' && items().length > 0) {
+          @if (!selectionMode()) {
+            <button
+              type="button"
+              class="gallery-page__select-btn"
+              (click)="enterSelectionMode()"
+              aria-label="Enter selection mode"
+            >
+              Select
+            </button>
+          } @else {
+            <button
+              type="button"
+              class="gallery-page__select-btn gallery-page__select-btn--cancel"
+              (click)="exitSelectionMode()"
+              aria-label="Exit selection mode and clear selection"
+            >
+              Cancel
+            </button>
+          }
+        }
       </header>
+
+      <!-- ── Bulk action bar ────────────────────────────────────────────── -->
+      @if (selectionMode()) {
+        <div class="gallery-page__action-bar" role="toolbar" aria-label="Bulk actions">
+          <span class="gallery-page__selection-count" aria-live="polite" aria-atomic="true">
+            {{ selectedCount() }} selected
+          </span>
+
+          <button
+            type="button"
+            class="gallery-page__select-all-btn"
+            (click)="toggleSelectAll()"
+            [attr.aria-pressed]="allSelected()"
+          >
+            {{ allSelected() ? 'Deselect all' : 'Select all' }}
+          </button>
+
+          <button
+            type="button"
+            class="gallery-page__delete-btn"
+            [disabled]="selectedCount() === 0 || isDeleting()"
+            (click)="requestBulkDelete()"
+            aria-label="Delete selected items"
+          >
+            @if (isDeleting()) {
+              Deleting…
+            } @else {
+              Delete {{ selectedCount() > 0 ? '(' + selectedCount() + ')' : '' }}
+            }
+          </button>
+        </div>
+      }
+
+      <!-- ── Delete failure summary ─────────────────────────────────────── -->
+      @if (deleteFailures().length > 0) {
+        <div class="gallery-page__failure-banner" role="alert">
+          <strong
+            >{{ deleteFailures().length }} item{{ deleteFailures().length === 1 ? '' : 's' }} could
+            not be deleted.</strong
+          >
+          They remain in your gallery. Please try again or contact support if the problem persists.
+          <button
+            type="button"
+            class="gallery-page__failure-dismiss"
+            aria-label="Dismiss error"
+            (click)="dismissFailures()"
+          >
+            Dismiss
+          </button>
+        </div>
+      }
 
       <!-- ── Loading ────────────────────────────────────────────────────── -->
       @if (loadState() === 'loading') {
@@ -79,19 +159,54 @@ type LoadState = 'loading' | 'loaded' | 'error';
 
       <!-- ── Grid ───────────────────────────────────────────────────────── -->
       @if (loadState() === 'loaded' && items().length > 0) {
-        <ul class="gallery-grid" aria-label="Media items">
+        <ul class="gallery-grid" aria-label="Media items" aria-multiselectable="true">
           @for (item of items(); track item.id) {
-            <li class="gallery-card">
+            <li
+              class="gallery-card"
+              [class.gallery-card--selected]="isSelected(item.id)"
+              [class.gallery-card--deleting]="isDeletingItem(item.id)"
+              [attr.aria-selected]="selectionMode() ? isSelected(item.id) : null"
+            >
+              <!-- Selection checkbox (visible in selection mode) -->
+              @if (selectionMode()) {
+                <label
+                  class="gallery-card__select-label"
+                  [attr.aria-label]="
+                    'Select ' +
+                    item.mimeType +
+                    ' uploaded ' +
+                    (item.createdAt | date: 'dd MMM yyyy')
+                  "
+                >
+                  <input
+                    type="checkbox"
+                    class="gallery-card__checkbox"
+                    [checked]="isSelected(item.id)"
+                    [disabled]="isDeletingItem(item.id)"
+                    (change)="toggleItem(item.id)"
+                    (click)="$event.stopPropagation()"
+                  />
+                </label>
+              }
+
               <!-- Thumbnail -->
               <div
                 class="gallery-card__thumb-wrap"
-                [class.gallery-card__thumb-wrap--video]="family(item) === 'video'"
-                [attr.role]="family(item) === 'video' ? 'button' : null"
-                [attr.tabindex]="family(item) === 'video' ? '0' : null"
-                [attr.aria-label]="videoAriaLabel(item)"
+                [class.gallery-card__thumb-wrap--video]="
+                  family(item) === 'video' && !selectionMode()
+                "
+                [class.gallery-card__thumb-wrap--selectable]="selectionMode()"
+                [attr.role]="
+                  selectionMode() ? 'checkbox' : family(item) === 'video' ? 'button' : null
+                "
+                [attr.tabindex]="selectionMode() || family(item) === 'video' ? '0' : null"
+                [attr.aria-checked]="selectionMode() ? isSelected(item.id) : null"
+                [attr.aria-label]="
+                  selectionMode() ? 'Select ' + item.mimeType : videoAriaLabel(item)
+                "
                 (click)="onCardClick(item)"
                 (keydown.enter)="onCardClick(item)"
-                (keydown.space)="onCardClick(item)"
+                (keydown.space)="$event.preventDefault(); onCardClick(item)"
               >
                 <img
                   class="gallery-card__thumb"
@@ -103,8 +218,15 @@ type LoadState = 'loading' | 'loaded' | 'error';
                   height="400"
                 />
 
-                <!-- Video overlay icon -->
-                @if (family(item) === 'video') {
+                <!-- Deleting spinner overlay -->
+                @if (isDeletingItem(item.id)) {
+                  <div class="gallery-card__deleting-overlay" aria-hidden="true">
+                    <span class="gallery-card__deleting-spinner"></span>
+                  </div>
+                }
+
+                <!-- Video overlay icon (hidden in selection mode) -->
+                @if (family(item) === 'video' && !selectionMode()) {
                   <span class="gallery-card__play" aria-hidden="true">▶</span>
                 }
 
@@ -144,6 +266,47 @@ type LoadState = 'loading' | 'loaded' | 'error';
         }
       }
     </div>
+
+    <!-- ── Bulk delete confirmation dialog ──────────────────────────────── -->
+    @if (showConfirmDialog()) {
+      <div
+        class="confirm-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-desc"
+        (click)="cancelBulkDelete()"
+        (keydown.escape)="cancelBulkDelete()"
+      >
+        <div
+          class="confirm-dialog"
+          tabindex="-1"
+          (click)="$event.stopPropagation()"
+          (keydown)="$event.stopPropagation()"
+        >
+          <h2 id="confirm-title" class="confirm-dialog__title">
+            Delete {{ selectedCount() }} item{{ selectedCount() === 1 ? '' : 's' }}?
+          </h2>
+          <p id="confirm-desc" class="confirm-dialog__body">
+            This will permanently remove the selected media from your Vault. This action cannot be
+            undone.
+          </p>
+          <div class="confirm-dialog__actions">
+            <button
+              type="button"
+              class="confirm-dialog__cancel"
+              (click)="cancelBulkDelete()"
+              #cancelBtn
+            >
+              Cancel
+            </button>
+            <button type="button" class="confirm-dialog__confirm" (click)="confirmBulkDelete()">
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    }
 
     <!-- ── Video player overlay ───────────────────────────────────────── -->
     @if (activeVideo()) {
@@ -200,6 +363,7 @@ type LoadState = 'loading' | 'loaded' | 'error';
         align-items: baseline;
         gap: 0.75rem;
         margin-bottom: 1.5rem;
+        flex-wrap: wrap;
       }
 
       .gallery-page__title {
@@ -211,6 +375,124 @@ type LoadState = 'loading' | 'loaded' | 'error';
       .gallery-page__count {
         font-size: 0.875rem;
         color: #6b7280;
+        margin-right: auto;
+      }
+
+      /* ── Select / Cancel button ───────────────────────────────────────── */
+      .gallery-page__select-btn {
+        padding: 0.375rem 0.875rem;
+        border-radius: 6px;
+        border: 1px solid #d1d5db;
+        background: #fff;
+        color: #374151;
+        font-size: 0.875rem;
+        cursor: pointer;
+        transition:
+          background 150ms,
+          border-color 150ms;
+      }
+
+      .gallery-page__select-btn:hover {
+        background: #f3f4f6;
+        border-color: #9ca3af;
+      }
+
+      .gallery-page__select-btn--cancel {
+        border-color: #6366f1;
+        color: #6366f1;
+      }
+
+      .gallery-page__select-btn--cancel:hover {
+        background: #eef2ff;
+      }
+
+      /* ── Bulk action bar ──────────────────────────────────────────────── */
+      .gallery-page__action-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.625rem 1rem;
+        margin-bottom: 1rem;
+        background: #f0f4ff;
+        border: 1px solid #c7d2fe;
+        border-radius: 8px;
+        flex-wrap: wrap;
+      }
+
+      .gallery-page__selection-count {
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: #374151;
+        min-width: 6rem;
+      }
+
+      .gallery-page__select-all-btn {
+        padding: 0.3rem 0.75rem;
+        border-radius: 6px;
+        border: 1px solid #a5b4fc;
+        background: #fff;
+        color: #4f46e5;
+        font-size: 0.8rem;
+        cursor: pointer;
+        transition: background 150ms;
+      }
+
+      .gallery-page__select-all-btn:hover {
+        background: #eef2ff;
+      }
+
+      .gallery-page__delete-btn {
+        margin-left: auto;
+        padding: 0.375rem 1rem;
+        border-radius: 6px;
+        border: none;
+        background: #ef4444;
+        color: #fff;
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          background 150ms,
+          opacity 150ms;
+      }
+
+      .gallery-page__delete-btn:hover:not(:disabled) {
+        background: #dc2626;
+      }
+
+      .gallery-page__delete-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      /* ── Failure banner ───────────────────────────────────────────────── */
+      .gallery-page__failure-banner {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.75rem 1rem;
+        margin-bottom: 1rem;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        border-radius: 8px;
+        color: #991b1b;
+        font-size: 0.875rem;
+        flex-wrap: wrap;
+      }
+
+      .gallery-page__failure-dismiss {
+        margin-left: auto;
+        padding: 0.25rem 0.625rem;
+        border-radius: 5px;
+        border: 1px solid #fca5a5;
+        background: #fff;
+        color: #991b1b;
+        font-size: 0.8rem;
+        cursor: pointer;
+      }
+
+      .gallery-page__failure-dismiss:hover {
+        background: #fef2f2;
       }
 
       /* ── Loading ──────────────────────────────────────────────────────── */
@@ -293,18 +575,54 @@ type LoadState = 'loading' | 'loaded' | 'error';
 
       /* ── Card ─────────────────────────────────────────────────────────── */
       .gallery-card {
+        position: relative;
         border-radius: 8px;
         overflow: hidden;
         background: #f9fafb;
         border: 1px solid #e5e7eb;
         transition:
           box-shadow 150ms,
-          transform 150ms;
+          transform 150ms,
+          border-color 150ms;
       }
 
       .gallery-card:hover {
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         transform: translateY(-2px);
+      }
+
+      .gallery-card--selected {
+        border-color: #6366f1;
+        box-shadow: 0 0 0 2px #a5b4fc;
+      }
+
+      .gallery-card--deleting {
+        opacity: 0.5;
+        pointer-events: none;
+      }
+
+      /* ── Selection checkbox ───────────────────────────────────────────── */
+      .gallery-card__select-label {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        background: rgba(255, 255, 255, 0.9);
+        border-radius: 50%;
+        cursor: pointer;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+      }
+
+      .gallery-card__checkbox {
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+        accent-color: #6366f1;
       }
 
       .gallery-card__thumb-wrap {
@@ -319,6 +637,36 @@ type LoadState = 'loading' | 'loaded' | 'error';
         height: 100%;
         object-fit: cover;
         display: block;
+      }
+
+      /* Selectable thumb in selection mode */
+      .gallery-card__thumb-wrap--selectable {
+        cursor: pointer;
+      }
+
+      .gallery-card__thumb-wrap--selectable:focus-visible {
+        outline: 2px solid #6366f1;
+        outline-offset: 2px;
+      }
+
+      /* Deleting overlay */
+      .gallery-card__deleting-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(255, 255, 255, 0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .gallery-card__deleting-spinner {
+        display: inline-block;
+        width: 28px;
+        height: 28px;
+        border: 3px solid #e5e7eb;
+        border-top-color: #6366f1;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
       }
 
       /* Video play overlay */
@@ -397,6 +745,78 @@ type LoadState = 'loading' | 'loaded' | 'error';
         outline-offset: 2px;
       }
 
+      /* ── Confirmation dialog ──────────────────────────────────────────── */
+      .confirm-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1100;
+        padding: 1rem;
+      }
+
+      .confirm-dialog {
+        background: #fff;
+        border-radius: 12px;
+        padding: 1.75rem;
+        max-width: 420px;
+        width: 100%;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+      }
+
+      .confirm-dialog__title {
+        font-size: 1.125rem;
+        font-weight: 600;
+        color: #111827;
+        margin: 0 0 0.75rem;
+      }
+
+      .confirm-dialog__body {
+        font-size: 0.9rem;
+        color: #6b7280;
+        margin: 0 0 1.5rem;
+        line-height: 1.5;
+      }
+
+      .confirm-dialog__actions {
+        display: flex;
+        gap: 0.75rem;
+        justify-content: flex-end;
+      }
+
+      .confirm-dialog__cancel {
+        padding: 0.5rem 1.25rem;
+        border-radius: 7px;
+        border: 1px solid #d1d5db;
+        background: #fff;
+        color: #374151;
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: background 150ms;
+      }
+
+      .confirm-dialog__cancel:hover {
+        background: #f3f4f6;
+      }
+
+      .confirm-dialog__confirm {
+        padding: 0.5rem 1.25rem;
+        border-radius: 7px;
+        border: none;
+        background: #ef4444;
+        color: #fff;
+        font-size: 0.9rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 150ms;
+      }
+
+      .confirm-dialog__confirm:hover {
+        background: #dc2626;
+      }
+
       /* ── Video player overlay ─────────────────────────────────────────── */
       .video-overlay {
         position: fixed;
@@ -472,15 +892,44 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
   private readonly mediaService = inject(MediaService);
   private readonly playback = inject(VideoPlaybackService);
 
+  // ── Load state ────────────────────────────────────────────────────────────
   readonly loadState = signal<LoadState>('loading');
   readonly items = signal<MediaCard[]>([]);
   readonly meta = signal<PaginationMeta | null>(null);
 
-  /** The video item currently open in the player overlay. */
+  // ── Video player ──────────────────────────────────────────────────────────
   readonly activeVideo = signal<MediaCard | null>(null);
-  /** True when the player failed to attach. */
   readonly playbackError = signal(false);
 
+  // ── Selection state ───────────────────────────────────────────────────────
+  /** Whether the gallery is in multi-select mode. */
+  readonly selectionMode = signal(false);
+
+  /** Set of selected media item IDs. */
+  readonly selectedIds = signal<Set<string>>(new Set());
+
+  /** Number of currently selected items. */
+  readonly selectedCount = computed(() => this.selectedIds().size);
+
+  /** True when every loaded item is selected. */
+  readonly allSelected = computed(
+    () => this.items().length > 0 && this.selectedIds().size === this.items().length,
+  );
+
+  // ── Delete state ──────────────────────────────────────────────────────────
+  /** Whether the confirmation dialog is open. */
+  readonly showConfirmDialog = signal(false);
+
+  /** IDs currently being deleted (shows per-card spinner). */
+  readonly deletingIds = signal<Set<string>>(new Set());
+
+  /** True while a bulk delete run is in progress. */
+  readonly isDeleting = signal(false);
+
+  /** Items that failed to delete in the last bulk run. */
+  readonly deleteFailures = signal<DeleteFailure[]>([]);
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
   ngOnInit(): void {
     this.load();
   }
@@ -489,12 +938,13 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     this.playback.detach();
   }
 
+  // ── Data loading ──────────────────────────────────────────────────────────
   load(): void {
     this.loadState.set('loading');
+    this.exitSelectionMode();
 
     this.mediaService.getMedia({ page: 1 }).subscribe({
       next: (response) => {
-        // The service enriches each item with thumbnailUrl.
         this.items.set(response.data as MediaCard[]);
         this.meta.set(response.meta);
         this.loadState.set('loaded');
@@ -505,44 +955,150 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     });
   }
 
-  /** Returns the coarse media family for a card. */
-  family(item: MediaItem): 'image' | 'video' | 'other' {
-    return mediaFamily(item.mimeType);
+  // ── Selection helpers ─────────────────────────────────────────────────────
+  enterSelectionMode(): void {
+    this.selectionMode.set(true);
+    this.selectedIds.set(new Set());
+    this.deleteFailures.set([]);
   }
 
-  /** True when there are more pages than the current one. */
-  hasMorePages(): boolean {
-    const m = this.meta();
-    return m !== null && m.totalPages > 1;
+  exitSelectionMode(): void {
+    this.selectionMode.set(false);
+    this.selectedIds.set(new Set());
+    this.showConfirmDialog.set(false);
   }
 
-  /** Returns the duration of the active video, or null. */
-  activeVideoDuration(): string | null {
-    return this.activeVideo()?.durationSeconds ?? null;
+  isSelected(id: string): boolean {
+    return this.selectedIds().has(id);
   }
 
-  /** Returns the aria-label for a video card's play button, or null for images. */
-  videoAriaLabel(item: MediaItem): string | null {
-    return this.family(item) === 'video' ? `Play ${item.mimeType}` : null;
+  isDeletingItem(id: string): boolean {
+    return this.deletingIds().has(id);
   }
 
-  /** Handles card click — only opens the player for video items. */
+  toggleItem(id: string): void {
+    const next = new Set(this.selectedIds());
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    this.selectedIds.set(next);
+  }
+
+  toggleSelectAll(): void {
+    if (this.allSelected()) {
+      this.selectedIds.set(new Set());
+    } else {
+      this.selectedIds.set(new Set(this.items().map((i) => i.id)));
+    }
+  }
+
+  // ── Card click ────────────────────────────────────────────────────────────
   onCardClick(item: MediaCard): void {
+    if (this.selectionMode()) {
+      this.toggleItem(item.id);
+      return;
+    }
     if (this.family(item) === 'video') {
       this.openPlayer(item);
     }
   }
 
-  /** Opens the video player overlay for the given video card. */
+  // ── Bulk delete flow ──────────────────────────────────────────────────────
+  /** Step 1: open confirmation dialog. */
+  requestBulkDelete(): void {
+    if (this.selectedCount() === 0 || this.isDeleting()) return;
+    this.showConfirmDialog.set(true);
+  }
+
+  /** Step 2: user cancelled — close dialog. */
+  cancelBulkDelete(): void {
+    this.showConfirmDialog.set(false);
+  }
+
+  /** Step 3: user confirmed — execute sequential deletes. */
+  confirmBulkDelete(): void {
+    this.showConfirmDialog.set(false);
+    this.isDeleting.set(true);
+    this.deleteFailures.set([]);
+
+    const ids = Array.from(this.selectedIds());
+    this.runSequentialDeletes(ids, 0, []);
+  }
+
+  /**
+   * Recursively deletes items one at a time to avoid hammering the API.
+   * On completion, removes successful items from local state and surfaces
+   * any failures.
+   */
+  private runSequentialDeletes(ids: string[], index: number, failures: DeleteFailure[]): void {
+    if (index >= ids.length) {
+      // All done — update state.
+      this.isDeleting.set(false);
+      this.deletingIds.set(new Set());
+
+      if (failures.length > 0) {
+        this.deleteFailures.set(failures);
+      }
+
+      // Remove successfully deleted items from the grid.
+      const failedIds = new Set(failures.map((f) => f.id));
+      this.items.update((current) =>
+        current.filter((item) => failedIds.has(item.id) || !ids.includes(item.id)),
+      );
+
+      // Update total count in meta.
+      const deletedCount = ids.length - failures.length;
+      this.meta.update((m) => (m ? { ...m, total: Math.max(0, m.total - deletedCount) } : m));
+
+      // Exit selection mode if all deletes succeeded.
+      if (failures.length === 0) {
+        this.exitSelectionMode();
+      } else {
+        // Keep selection mode open but only keep failed items selected.
+        this.selectedIds.set(new Set(failures.map((f) => f.id)));
+      }
+      return;
+    }
+
+    const id = ids[index];
+
+    // Mark this item as in-progress.
+    this.deletingIds.update((s) => new Set([...s, id]));
+
+    this.mediaService.deleteMedia(id).subscribe({
+      next: () => {
+        this.deletingIds.update((s) => {
+          const next = new Set(s);
+          next.delete(id);
+          return next;
+        });
+        this.runSequentialDeletes(ids, index + 1, failures);
+      },
+      error: () => {
+        this.deletingIds.update((s) => {
+          const next = new Set(s);
+          next.delete(id);
+          return next;
+        });
+        const failedItem = this.items().find((i) => i.id === id);
+        const newFailures = [...failures, { id, mimeType: failedItem?.mimeType ?? 'unknown' }];
+        this.runSequentialDeletes(ids, index + 1, newFailures);
+      },
+    });
+  }
+
+  dismissFailures(): void {
+    this.deleteFailures.set([]);
+  }
+
+  // ── Video player ──────────────────────────────────────────────────────────
   openPlayer(item: MediaCard): void {
     this.playback.detach();
     this.activeVideo.set(item);
     this.playbackError.set(false);
 
-    // Defer attachment until the <video> element is rendered.
-    // Using setTimeout(0) is safe here — the overlay renders synchronously
-    // in the same microtask queue flush, and the video element is available
-    // on the next macrotask.
     setTimeout(() => {
       const videoEl = this.videoElRef?.nativeElement;
       if (!videoEl) return;
@@ -560,18 +1116,32 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     }, 0);
   }
 
-  /** Closes the video player overlay and releases the player. */
   closePlayer(): void {
     this.playback.detach();
     this.activeVideo.set(null);
     this.playbackError.set(false);
   }
 
-  /**
-   * Formats a decimal seconds string into a human-readable duration.
-   * e.g. "125.500" → "2:05"
-   */
-  formatDuration(seconds: string): string {
+  // ── Utility helpers ───────────────────────────────────────────────────────
+  family(item: MediaItem): 'image' | 'video' | 'other' {
+    return mediaFamily(item.mimeType);
+  }
+
+  hasMorePages(): boolean {
+    const m = this.meta();
+    return m !== null && m.totalPages > 1;
+  }
+
+  activeVideoDuration(): string | null {
+    return this.activeVideo()?.durationSeconds ?? null;
+  }
+
+  videoAriaLabel(item: MediaItem): string | null {
+    return this.family(item) === 'video' ? `Play ${item.mimeType}` : null;
+  }
+
+  formatDuration(seconds: string | null): string {
+    if (!seconds) return '0:00';
     const total = Math.floor(parseFloat(seconds));
     const m = Math.floor(total / 60);
     const s = total % 60;

@@ -18,11 +18,12 @@ export interface GetMediaParams {
 }
 
 /**
- * Read-only Angular service for the media listing endpoint.
+ * Angular service for the media endpoints.
  *
- * Calls GET /api/v1/media, maps the raw JSON into typed {@link MediaItem}
- * objects, and derives Cloudinary thumbnail URLs client-side so the gallery
- * grid can display previews without fetching full-resolution assets.
+ * Calls GET /api/v1/media (list) and DELETE /api/v1/media/:id (delete).
+ * Maps raw JSON into typed {@link MediaItem} objects and derives Cloudinary
+ * thumbnail URLs client-side so the gallery grid can display previews without
+ * fetching full-resolution assets.
  *
  * Authentication is handled transparently by the shared auth interceptors
  * registered in app.config.ts — no manual token handling here.
@@ -57,6 +58,20 @@ export class MediaService {
         withCredentials: true,
       })
       .pipe(map((response) => this.enrichResponse(response)));
+  }
+
+  /**
+   * Deletes a single media item by its UUID.
+   *
+   * Calls DELETE /api/v1/media/:id. Returns an Observable<void> that
+   * completes on success or errors on failure (4xx / 5xx).
+   *
+   * @param id  UUID of the media item to delete.
+   */
+  deleteMedia(id: string): Observable<void> {
+    return this.http.delete<void>(`${this.apiBaseUrl}/media/${encodeURIComponent(id)}`, {
+      withCredentials: true,
+    });
   }
 
   /**
