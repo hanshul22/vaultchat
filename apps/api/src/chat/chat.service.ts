@@ -311,6 +311,26 @@ export class ChatService {
     return this.toMessageResponse(loaded);
   }
 
+  // ── Mark read ─────────────────────────────────────────────────────────────
+
+  /**
+   * Updates `conversation_members.last_read_message_id` for the given user.
+   * Called by both the REST layer (future) and the WebSocket gateway.
+   */
+  async markRead(userId: string, conversationId: string, messageId: string): Promise<void> {
+    await this.assertMember(userId, conversationId);
+
+    // Verify the message exists in this conversation.
+    const message = await this.messageRepo.findOne({
+      where: { id: messageId, conversationId },
+    });
+    if (!message) {
+      throw new NotFoundException('Message not found in this conversation.');
+    }
+
+    await this.memberRepo.update({ conversationId, userId }, { lastReadMessageId: messageId });
+  }
+
   // ── Private helpers ───────────────────────────────────────────────────────
 
   /**

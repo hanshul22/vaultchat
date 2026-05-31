@@ -10,6 +10,9 @@ import { User } from '../users/entities/user.entity';
 
 import { ChatController } from './chat.controller';
 import { ChatService } from './chat.service';
+import { ChatGateway } from './chat.gateway';
+import { ChatPresenceService } from './presence/chat-presence.service';
+import { WsJwtGuard } from './guards/ws-jwt.guard';
 
 @Module({
   imports: [
@@ -23,7 +26,7 @@ import { ChatService } from './chat.service';
     ]),
   ],
   controllers: [ChatController],
-  providers: [ChatService],
-  exports: [ChatService],
+  providers: [ChatService, ChatGateway, ChatPresenceService, WsJwtGuard],
+  exports: [ChatService, ChatPresenceService],
 })
 export class ChatModule {}
