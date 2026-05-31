@@ -32,8 +32,9 @@ export type UploadQueueStatus =
   | 'processError' // Transcoding failed — retryable
   | 'checking' // Preflight HTTP call in flight
   | 'ready' // Preflight passed — file can be uploaded
-  | 'uploading' // POST /api/v1/media/upload in flight
-  | 'uploaded' // Upload succeeded — media row created
+  | 'splitting' // Client-side chunk splitting in progress (fast, synchronous)
+  | 'uploading' // Upload in flight (direct single-part or sequential chunked)
+  | 'uploaded' // Upload succeeded — media row(s) created
   | 'uploadError'; // Preflight rejected, upload failed, or client validation failed
 
 /**
@@ -114,6 +115,26 @@ export interface UploadQueueItem {
    * re-running preflight.
    */
   preflightResult?: MediaUploadPreflightResponse;
+
+  // ── Chunked upload fields (large processed videos only) ───────────────────
+
+  /**
+   * Total number of chunks when the file was split.
+   * 1 for direct (non-split) uploads; > 1 for chunked uploads.
+   */
+  totalChunks?: number;
+
+  /**
+   * Index (0-based) of the chunk currently being uploaded.
+   * Null when not in a chunked upload.
+   */
+  currentChunkIndex?: number | null;
+
+  /**
+   * Client-generated UUID that ties all chunks of one logical media item.
+   * Sent as `mediaId` in each chunk's FormData.
+   */
+  chunkMediaId?: string;
 
   /**
    * Successful upload response, populated when status === 'uploaded'.

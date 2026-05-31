@@ -18,6 +18,7 @@ import {
   VideoProbeResult,
   MAX_VIDEO_HEIGHT_PX,
   VIDEO_CRF,
+  MAX_CHUNK_BYTES,
 } from '../../core/models/video-processing.model';
 
 // ── MIME allowlist (mirrors backend media.constants.ts exactly) ───────────────
@@ -254,6 +255,9 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     @case ('processing') {
                       <span class="queue-item__spinner queue-item__spinner--process"></span>
                     }
+                    @case ('splitting') {
+                      <span class="queue-item__spinner queue-item__spinner--process"></span>
+                    }
                     @case ('probed') {
                       🎬
                     }
@@ -343,6 +347,21 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                   @if (item.status === 'processError' && item.processErrorMessage) {
                     <p class="queue-item__status queue-item__status--err">
                       Processing failed: {{ item.processErrorMessage }}
+                    </p>
+                  }
+
+                  <!-- Splitting into chunks -->
+                  @if (item.status === 'splitting') {
+                    <p class="queue-item__status queue-item__status--info">
+                      Splitting into {{ item.totalChunks }} chunks…
+                    </p>
+                  }
+
+                  <!-- Chunked upload progress -->
+                  @if (item.status === 'uploading' && item.totalChunks && item.totalChunks > 1) {
+                    <p class="queue-item__status queue-item__status--info">
+                      Uploading chunk
+                      {{ (item.currentChunkIndex ?? 0) + 1 }} of {{ item.totalChunks }}…
                     </p>
                   }
 
@@ -453,10 +472,11 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Remove (not while probing/processing/uploading/checking) -->
+                  <!-- Remove (not while probing/processing/splitting/uploading/checking) -->
                   @if (
                     item.status !== 'probing' &&
                     item.status !== 'processing' &&
+                    item.status !== 'splitting' &&
                     item.status !== 'uploading' &&
                     item.status !== 'checking'
                   ) {
@@ -694,6 +714,10 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
       .queue-item[data-status='processError'] {
         border-color: #fecaca;
         background: #fef2f2;
+      }
+      .queue-item[data-status='splitting'] {
+        border-color: #c4b5fd;
+        background: #f5f3ff;
       }
 
       .queue-item__icon {
@@ -959,7 +983,7 @@ export class UploadsPageComponent {
   }
 
   isProcessingAny(): boolean {
-    return this.queue().some((i) => i.status === 'processing');
+    return this.queue().some((i) => i.status === 'processing' || i.status === 'splitting');
   }
 
   /** True when any async operation is in flight — disables bulk actions. */
@@ -1233,30 +1257,103 @@ export class UploadsPageComponent {
   uploadAll(): void {
     const ready = this.queue().filter((i) => i.status === 'ready');
     for (const item of ready) {
-      this.uploadOne(item.clientId);
+      void this.uploadOne(item.clientId);
     }
   }
 
-  uploadOne(clientId: string): void {
+  async uploadOne(clientId: string): Promise<void> {
     const item = this.queue().find((i) => i.clientId === clientId);
     if (!item || item.status !== 'ready') return;
-
-    this.patchItem(clientId, { status: 'uploading', errorMessage: undefined });
 
     // Use the processed (transcoded) file when available; fall back to original.
     const fileToUpload = item.processedFile ?? item.file;
 
+    // Route through chunked upload when the file exceeds the 100 MB ceiling.
+    if (fileToUpload.size > MAX_CHUNK_BYTES) {
+      await this.uploadChunked(clientId, fileToUpload);
+    } else {
+      this.uploadDirect(clientId, fileToUpload);
+    }
+  }
+
+  /** Direct single-part upload for files ≤ 100 MB. */
+  private uploadDirect(clientId: string, fileToUpload: File): void {
+    this.patchItem(clientId, {
+      status: 'uploading',
+      errorMessage: undefined,
+      totalChunks: 1,
+      currentChunkIndex: 0,
+    });
+
     this.uploadService.uploadFile(fileToUpload).subscribe({
       next: (response) => {
-        this.patchItem(clientId, { status: 'uploaded', uploadedMedia: response });
+        this.patchItem(clientId, {
+          status: 'uploaded',
+          uploadedMedia: response,
+          currentChunkIndex: null,
+        });
       },
       error: (err: HttpErrorResponse) => {
         this.patchItem(clientId, {
           status: 'uploadError',
-          errorMessage: uploadErrorMessage(err, item.mimeType),
+          errorMessage: uploadErrorMessage(err, fileToUpload.type),
+          currentChunkIndex: null,
         });
       },
     });
+  }
+
+  /** Split-then-sequential-upload for files > 100 MB. */
+  private async uploadChunked(clientId: string, fileToUpload: File): Promise<void> {
+    // Step 1 — split (synchronous, fast).
+    this.patchItem(clientId, {
+      status: 'splitting',
+      errorMessage: undefined,
+      currentChunkIndex: null,
+    });
+
+    let splitResult;
+    try {
+      splitResult = this.videoProcessing.splitFile(fileToUpload);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to split file.';
+      this.patchItem(clientId, { status: 'uploadError', errorMessage: message });
+      return;
+    }
+
+    // Step 2 — sequential upload.
+    this.patchItem(clientId, {
+      status: 'uploading',
+      totalChunks: splitResult.chunks.length,
+      currentChunkIndex: 0,
+      chunkMediaId: splitResult.mediaId,
+    });
+
+    try {
+      const response = await this.uploadService.uploadChunked(
+        splitResult,
+        {},
+        (completedIndex, _totalParts) => {
+          // Update progress after each chunk completes.
+          this.patchItem(clientId, {
+            currentChunkIndex: completedIndex + 1,
+          });
+        },
+      );
+
+      this.patchItem(clientId, {
+        status: 'uploaded',
+        uploadedMedia: response,
+        currentChunkIndex: null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Chunked upload failed.';
+      this.patchItem(clientId, {
+        status: 'uploadError',
+        errorMessage: message,
+        currentChunkIndex: null,
+      });
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────

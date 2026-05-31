@@ -123,3 +123,41 @@ export interface VideoProcessingResult {
 export type ProcessingSkipReason =
   | 'ffmpeg_not_ready' // Engine not yet loaded
   | 'no_transcoding_needed'; // File already meets quality/size requirements
+
+// ── Chunk splitting ───────────────────────────────────────────────────────────
+
+/** Maximum bytes per chunk sent to POST /api/v1/media/upload. Per PRD: 100 MB. */
+export const MAX_CHUNK_BYTES = 100 * 1024 * 1024;
+
+/**
+ * A single chunk produced by VideoProcessingService.splitFile().
+ *
+ * Each chunk is a browser Blob slice of the source file, wrapped in a File
+ * so it can be appended to FormData with a meaningful name.
+ */
+export interface VideoChunk {
+  /** 0-based index of this chunk within the logical file. */
+  partIndex: number;
+  /** Total number of chunks for this logical file. */
+  totalParts: number;
+  /** The chunk data as a File (MIME type matches the source). */
+  file: File;
+  /** Byte size of this chunk. */
+  sizeBytes: number;
+  /** Byte offset of this chunk within the original file. */
+  byteOffset: number;
+}
+
+/**
+ * Result of VideoProcessingService.splitFile().
+ */
+export interface FileSplitResult {
+  /** Client-generated UUID that ties all chunks to one logical media item. */
+  mediaId: string;
+  /** Total byte size of the original (unsplit) file. */
+  totalFileSize: number;
+  /** Ordered list of chunks ready for sequential upload. */
+  chunks: VideoChunk[];
+  /** True when the file was actually split (> 1 chunk). */
+  wasSplit: boolean;
+}

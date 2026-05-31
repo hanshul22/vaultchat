@@ -4,7 +4,10 @@ import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import {
   FfmpegLoadState,
   FfmpegProgress,
+  FileSplitResult,
+  MAX_CHUNK_BYTES,
   MAX_VIDEO_HEIGHT_PX,
+  VideoChunk,
   VideoProbeResult,
   VideoProcessingRequest,
   VideoProcessingResult,
@@ -272,6 +275,48 @@ export class VideoProcessingService implements OnDestroy {
     }
     this.loadPromise = null;
     this._loadState.next('idle');
+  }
+
+  /**
+   * Splits a File into sequential chunks of at most MAX_CHUNK_BYTES (100 MB).
+   *
+   * Uses `File.slice()` (synchronous, zero-copy in modern browsers) so this
+   * method is fast and does not require ffmpeg to be loaded.
+   *
+   * Returns a {@link FileSplitResult} with a client-generated `mediaId` UUID
+   * that ties all chunks to one logical media item, plus the ordered chunk list.
+   *
+   * When the file is ≤ MAX_CHUNK_BYTES, a single-chunk result is returned
+   * (`wasSplit === false`) so callers can use a uniform code path.
+   *
+   * @param file       The File to split (typically the processedFile output).
+   * @param chunkSize  Maximum bytes per chunk. Defaults to MAX_CHUNK_BYTES.
+   */
+  splitFile(file: File, chunkSize = MAX_CHUNK_BYTES): FileSplitResult {
+    const totalFileSize = file.size;
+    const totalParts = Math.ceil(totalFileSize / chunkSize);
+    const mediaId = crypto.randomUUID();
+
+    const chunks: VideoChunk[] = [];
+
+    for (let i = 0; i < totalParts; i++) {
+      const byteOffset = i * chunkSize;
+      const end = Math.min(byteOffset + chunkSize, totalFileSize);
+      const blob = file.slice(byteOffset, end, file.type);
+      const chunkFile = new File([blob], `${file.name}.part${i + 1}of${totalParts}`, {
+        type: file.type,
+      });
+
+      chunks.push({
+        partIndex: i,
+        totalParts,
+        file: chunkFile,
+        sizeBytes: chunkFile.size,
+        byteOffset,
+      });
+    }
+
+    return { mediaId, totalFileSize, chunks, wasSplit: totalParts > 1 };
   }
 
   // ── Private — loader ─────────────────────────────────────────────────────
