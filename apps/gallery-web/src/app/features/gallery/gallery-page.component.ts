@@ -47,7 +47,6 @@ interface DeleteFailure {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="gallery-page">
-      <!-- ── Header ─────────────────────────────────────────────────────── -->
       <header class="gallery-page__header">
         <h1 class="gallery-page__title">Gallery</h1>
         @if (loadState() === 'loaded') {
@@ -56,7 +55,6 @@ interface DeleteFailure {
           </span>
         }
 
-        <!-- Selection mode toggle -->
         @if (loadState() === 'loaded' && items().length > 0) {
           @if (!selectionMode()) {
             <button
@@ -80,7 +78,6 @@ interface DeleteFailure {
         }
       </header>
 
-      <!-- ── Bulk action bar ────────────────────────────────────────────── -->
       @if (selectionMode()) {
         <div class="gallery-page__action-bar" role="toolbar" aria-label="Bulk actions">
           <span class="gallery-page__selection-count" aria-live="polite" aria-atomic="true">
@@ -112,13 +109,12 @@ interface DeleteFailure {
         </div>
       }
 
-      <!-- ── Delete failure summary ─────────────────────────────────────── -->
       @if (deleteFailures().length > 0) {
         <div class="gallery-page__failure-banner" role="alert">
-          <strong
-            >{{ deleteFailures().length }} item{{ deleteFailures().length === 1 ? '' : 's' }} could
-            not be deleted.</strong
-          >
+          <strong>
+            {{ deleteFailures().length }} item{{ deleteFailures().length === 1 ? '' : 's' }} could
+            not be deleted.
+          </strong>
           They remain in your gallery. Please try again or contact support if the problem persists.
           <button
             type="button"
@@ -131,7 +127,6 @@ interface DeleteFailure {
         </div>
       }
 
-      <!-- ── Loading ────────────────────────────────────────────────────── -->
       @if (loadState() === 'loading') {
         <div class="gallery-page__loading" role="status" aria-live="polite">
           <span class="gallery-page__spinner" aria-hidden="true"></span>
@@ -139,7 +134,6 @@ interface DeleteFailure {
         </div>
       }
 
-      <!-- ── Error ──────────────────────────────────────────────────────── -->
       @if (loadState() === 'error') {
         <div class="gallery-page__error" role="alert">
           <p>Could not load your media. Please try again.</p>
@@ -147,7 +141,6 @@ interface DeleteFailure {
         </div>
       }
 
-      <!-- ── Empty state ────────────────────────────────────────────────── -->
       @if (loadState() === 'loaded' && items().length === 0) {
         <div class="gallery-page__empty">
           <p class="gallery-page__empty-title">No media yet</p>
@@ -157,7 +150,6 @@ interface DeleteFailure {
         </div>
       }
 
-      <!-- ── Grid ───────────────────────────────────────────────────────── -->
       @if (loadState() === 'loaded' && items().length > 0) {
         <ul class="gallery-grid" aria-label="Media items" aria-multiselectable="true">
           @for (item of items(); track item.id) {
@@ -167,7 +159,6 @@ interface DeleteFailure {
               [class.gallery-card--deleting]="isDeletingItem(item.id)"
               [attr.aria-selected]="selectionMode() ? isSelected(item.id) : null"
             >
-              <!-- Selection checkbox (visible in selection mode) -->
               @if (selectionMode()) {
                 <label
                   class="gallery-card__select-label"
@@ -189,7 +180,6 @@ interface DeleteFailure {
                 </label>
               }
 
-              <!-- Thumbnail -->
               <div
                 class="gallery-card__thumb-wrap"
                 [class.gallery-card__thumb-wrap--video]="
@@ -218,19 +208,16 @@ interface DeleteFailure {
                   height="400"
                 />
 
-                <!-- Deleting spinner overlay -->
                 @if (isDeletingItem(item.id)) {
                   <div class="gallery-card__deleting-overlay" aria-hidden="true">
                     <span class="gallery-card__deleting-spinner"></span>
                   </div>
                 }
 
-                <!-- Video overlay icon (hidden in selection mode) -->
                 @if (family(item) === 'video' && !selectionMode()) {
                   <span class="gallery-card__play" aria-hidden="true">▶</span>
                 }
 
-                <!-- Type badge -->
                 <span
                   class="gallery-card__badge"
                   [class.gallery-card__badge--video]="family(item) === 'video'"
@@ -239,7 +226,6 @@ interface DeleteFailure {
                 </span>
               </div>
 
-              <!-- Meta -->
               <div class="gallery-card__meta">
                 <span class="gallery-card__mime" title="{{ item.mimeType }}">
                   {{ item.mimeType }}
@@ -257,7 +243,6 @@ interface DeleteFailure {
           }
         </ul>
 
-        <!-- ── Pagination hint ─────────────────────────────────────────── -->
         @if (hasMorePages()) {
           <p class="gallery-page__pagination-hint">
             Showing page {{ meta()?.page }} of {{ meta()?.totalPages }} ({{ meta()?.total }} items
@@ -267,7 +252,6 @@ interface DeleteFailure {
       }
     </div>
 
-    <!-- ── Bulk delete confirmation dialog ──────────────────────────────── -->
     @if (showConfirmDialog()) {
       <div
         class="confirm-overlay"
@@ -308,7 +292,6 @@ interface DeleteFailure {
       </div>
     }
 
-    <!-- ── Video player overlay ───────────────────────────────────────── -->
     @if (activeVideo()) {
       <div
         class="video-overlay"
@@ -353,7 +336,6 @@ interface DeleteFailure {
   `,
   styles: [
     `
-      /* ── Page layout ──────────────────────────────────────────────────── */
       .gallery-page {
         max-width: 1200px;
       }
@@ -378,7 +360,6 @@ interface DeleteFailure {
         margin-right: auto;
       }
 
-      /* ── Select / Cancel button ───────────────────────────────────────── */
       .gallery-page__select-btn {
         padding: 0.375rem 0.875rem;
         border-radius: 6px;
@@ -406,7 +387,6 @@ interface DeleteFailure {
         background: #eef2ff;
       }
 
-      /* ── Bulk action bar ──────────────────────────────────────────────── */
       .gallery-page__action-bar {
         display: flex;
         align-items: center;
@@ -465,7 +445,6 @@ interface DeleteFailure {
         cursor: not-allowed;
       }
 
-      /* ── Failure banner ───────────────────────────────────────────────── */
       .gallery-page__failure-banner {
         display: flex;
         align-items: center;
@@ -495,7 +474,6 @@ interface DeleteFailure {
         background: #fef2f2;
       }
 
-      /* ── Loading ──────────────────────────────────────────────────────── */
       .gallery-page__loading {
         display: flex;
         align-items: center;
@@ -520,7 +498,6 @@ interface DeleteFailure {
         }
       }
 
-      /* ── Error ────────────────────────────────────────────────────────── */
       .gallery-page__error {
         padding: 2rem;
         background: #fef2f2;
@@ -544,7 +521,6 @@ interface DeleteFailure {
         background: #fef2f2;
       }
 
-      /* ── Empty state ──────────────────────────────────────────────────── */
       .gallery-page__empty {
         padding: 4rem 2rem;
         text-align: center;
@@ -563,7 +539,6 @@ interface DeleteFailure {
         font-size: 0.9rem;
       }
 
-      /* ── Grid ─────────────────────────────────────────────────────────── */
       .gallery-grid {
         list-style: none;
         margin: 0;
@@ -573,7 +548,6 @@ interface DeleteFailure {
         gap: 1rem;
       }
 
-      /* ── Card ─────────────────────────────────────────────────────────── */
       .gallery-card {
         position: relative;
         border-radius: 8px;
@@ -601,7 +575,6 @@ interface DeleteFailure {
         pointer-events: none;
       }
 
-      /* ── Selection checkbox ───────────────────────────────────────────── */
       .gallery-card__select-label {
         position: absolute;
         top: 6px;
@@ -639,7 +612,6 @@ interface DeleteFailure {
         display: block;
       }
 
-      /* Selectable thumb in selection mode */
       .gallery-card__thumb-wrap--selectable {
         cursor: pointer;
       }
@@ -649,7 +621,6 @@ interface DeleteFailure {
         outline-offset: 2px;
       }
 
-      /* Deleting overlay */
       .gallery-card__deleting-overlay {
         position: absolute;
         inset: 0;
@@ -669,7 +640,6 @@ interface DeleteFailure {
         animation: spin 0.7s linear infinite;
       }
 
-      /* Video play overlay */
       .gallery-card__play {
         position: absolute;
         inset: 0;
@@ -682,7 +652,6 @@ interface DeleteFailure {
         pointer-events: none;
       }
 
-      /* Type badge */
       .gallery-card__badge {
         position: absolute;
         top: 6px;
@@ -701,7 +670,6 @@ interface DeleteFailure {
         background: rgba(239, 68, 68, 0.85);
       }
 
-      /* Meta row */
       .gallery-card__meta {
         padding: 0.5rem 0.625rem;
         display: flex;
@@ -727,7 +695,6 @@ interface DeleteFailure {
         color: #6b7280;
       }
 
-      /* ── Pagination hint ──────────────────────────────────────────────── */
       .gallery-page__pagination-hint {
         margin-top: 1.5rem;
         font-size: 0.8rem;
@@ -735,7 +702,6 @@ interface DeleteFailure {
         text-align: center;
       }
 
-      /* ── Video card clickable state ───────────────────────────────────── */
       .gallery-card__thumb-wrap--video {
         cursor: pointer;
       }
@@ -745,7 +711,6 @@ interface DeleteFailure {
         outline-offset: 2px;
       }
 
-      /* ── Confirmation dialog ──────────────────────────────────────────── */
       .confirm-overlay {
         position: fixed;
         inset: 0;
@@ -817,7 +782,6 @@ interface DeleteFailure {
         background: #dc2626;
       }
 
-      /* ── Video player overlay ─────────────────────────────────────────── */
       .video-overlay {
         position: fixed;
         inset: 0;
@@ -892,44 +856,25 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
   private readonly mediaService = inject(MediaService);
   private readonly playback = inject(VideoPlaybackService);
 
-  // ── Load state ────────────────────────────────────────────────────────────
   readonly loadState = signal<LoadState>('loading');
   readonly items = signal<MediaCard[]>([]);
   readonly meta = signal<PaginationMeta | null>(null);
 
-  // ── Video player ──────────────────────────────────────────────────────────
   readonly activeVideo = signal<MediaCard | null>(null);
   readonly playbackError = signal(false);
 
-  // ── Selection state ───────────────────────────────────────────────────────
-  /** Whether the gallery is in multi-select mode. */
   readonly selectionMode = signal(false);
-
-  /** Set of selected media item IDs. */
   readonly selectedIds = signal<Set<string>>(new Set());
-
-  /** Number of currently selected items. */
   readonly selectedCount = computed(() => this.selectedIds().size);
-
-  /** True when every loaded item is selected. */
   readonly allSelected = computed(
     () => this.items().length > 0 && this.selectedIds().size === this.items().length,
   );
 
-  // ── Delete state ──────────────────────────────────────────────────────────
-  /** Whether the confirmation dialog is open. */
   readonly showConfirmDialog = signal(false);
-
-  /** IDs currently being deleted (shows per-card spinner). */
   readonly deletingIds = signal<Set<string>>(new Set());
-
-  /** True while a bulk delete run is in progress. */
   readonly isDeleting = signal(false);
-
-  /** Items that failed to delete in the last bulk run. */
   readonly deleteFailures = signal<DeleteFailure[]>([]);
 
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
   ngOnInit(): void {
     this.load();
   }
@@ -938,7 +883,6 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     this.playback.detach();
   }
 
-  // ── Data loading ──────────────────────────────────────────────────────────
   load(): void {
     this.loadState.set('loading');
     this.exitSelectionMode();
@@ -955,7 +899,6 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     });
   }
 
-  // ── Selection helpers ─────────────────────────────────────────────────────
   enterSelectionMode(): void {
     this.selectionMode.set(true);
     this.selectedIds.set(new Set());
@@ -994,7 +937,6 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     }
   }
 
-  // ── Card click ────────────────────────────────────────────────────────────
   onCardClick(item: MediaCard): void {
     if (this.selectionMode()) {
       this.toggleItem(item.id);
@@ -1005,19 +947,15 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     }
   }
 
-  // ── Bulk delete flow ──────────────────────────────────────────────────────
-  /** Step 1: open confirmation dialog. */
   requestBulkDelete(): void {
     if (this.selectedCount() === 0 || this.isDeleting()) return;
     this.showConfirmDialog.set(true);
   }
 
-  /** Step 2: user cancelled — close dialog. */
   cancelBulkDelete(): void {
     this.showConfirmDialog.set(false);
   }
 
-  /** Step 3: user confirmed — execute sequential deletes. */
   confirmBulkDelete(): void {
     this.showConfirmDialog.set(false);
     this.isDeleting.set(true);
@@ -1027,14 +965,8 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     this.runSequentialDeletes(ids, 0, []);
   }
 
-  /**
-   * Recursively deletes items one at a time to avoid hammering the API.
-   * On completion, removes successful items from local state and surfaces
-   * any failures.
-   */
   private runSequentialDeletes(ids: string[], index: number, failures: DeleteFailure[]): void {
     if (index >= ids.length) {
-      // All done — update state.
       this.isDeleting.set(false);
       this.deletingIds.set(new Set());
 
@@ -1042,21 +974,17 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
         this.deleteFailures.set(failures);
       }
 
-      // Remove successfully deleted items from the grid.
       const failedIds = new Set(failures.map((f) => f.id));
       this.items.update((current) =>
         current.filter((item) => failedIds.has(item.id) || !ids.includes(item.id)),
       );
 
-      // Update total count in meta.
       const deletedCount = ids.length - failures.length;
       this.meta.update((m) => (m ? { ...m, total: Math.max(0, m.total - deletedCount) } : m));
 
-      // Exit selection mode if all deletes succeeded.
       if (failures.length === 0) {
         this.exitSelectionMode();
       } else {
-        // Keep selection mode open but only keep failed items selected.
         this.selectedIds.set(new Set(failures.map((f) => f.id)));
       }
       return;
@@ -1064,7 +992,6 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
 
     const id = ids[index];
 
-    // Mark this item as in-progress.
     this.deletingIds.update((s) => new Set([...s, id]));
 
     this.mediaService.deleteMedia(id).subscribe({
@@ -1093,7 +1020,6 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     this.deleteFailures.set([]);
   }
 
-  // ── Video player ──────────────────────────────────────────────────────────
   openPlayer(item: MediaCard): void {
     this.playback.detach();
     this.activeVideo.set(item);
@@ -1105,11 +1031,6 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
 
       this.playback
         .attach(videoEl, item.url, item.mimeType)
-        .then((result) => {
-          if (!result.hlsJsAttached && result.mode === 'direct') {
-            // Direct mode: src is already set; nothing more to do.
-          }
-        })
         .catch(() => {
           this.playbackError.set(true);
         });
@@ -1122,7 +1043,6 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     this.playbackError.set(false);
   }
 
-  // ── Utility helpers ───────────────────────────────────────────────────────
   family(item: MediaItem): 'image' | 'video' | 'other' {
     return mediaFamily(item.mimeType);
   }

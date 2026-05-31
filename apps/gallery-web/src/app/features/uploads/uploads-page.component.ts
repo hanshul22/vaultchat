@@ -9,13 +9,12 @@ import {
 import { HttpErrorResponse } from '@angular/common/http';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { toSignal } from '@angular/core/rxjs-interop';
-
 import { RouterLink } from '@angular/router';
+
 import { UploadService } from '../../core/services/upload.service';
 import { VideoProcessingService } from '../../core/services/video-processing.service';
 import { UploadQueueItem, UploadQueueStatus } from '../../core/models/upload-queue-item.model';
 import { PreflightRejectReason } from '../../core/models/media-upload-preflight.model';
-
 import {
   VideoProbeResult,
   MAX_VIDEO_HEIGHT_PX,
@@ -23,7 +22,6 @@ import {
   MAX_CHUNK_BYTES,
 } from '../../core/models/video-processing.model';
 
-// ── MIME allowlist (mirrors backend media.constants.ts exactly) ───────────────
 const ALLOWED_MIME_TYPES = [
   'image/jpeg',
   'image/png',
@@ -33,10 +31,7 @@ const ALLOWED_MIME_TYPES = [
   'video/quicktime',
 ] as const;
 
-/** accept= string for the file input — covers all allowed types. */
 const FILE_INPUT_ACCEPT = ALLOWED_MIME_TYPES.join(',');
-
-/** 100 MB ceiling (mirrors MAX_UPLOAD_SIZE_BYTES from Phase 7). */
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 
 function isAllowedMime(mime: string): boolean {
@@ -296,12 +291,10 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     {{ formatBytes(item.sizeBytes) }} · {{ item.mimeType }}
                   </p>
 
-                  <!-- Probing -->
                   @if (item.status === 'probing') {
                     <p class="queue-item__status queue-item__status--info">Analysing video…</p>
                   }
 
-                  <!-- Probe result -->
                   @if (item.probeResult) {
                     <p class="queue-item__status queue-item__status--probe">
                       {{ item.probeResult.width }}×{{ item.probeResult.height }} ·
@@ -311,21 +304,19 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                       }
                       @if (item.probeResult.requiresDownscale) {
                         ·
-                        <strong class="queue-item__downscale-warn"
-                          >⬇ will downscale to 1080p</strong
-                        >
+                        <strong class="queue-item__downscale-warn">
+                          ⬇ will downscale to 1080p
+                        </strong>
                       }
                     </p>
                   }
 
-                  <!-- Probe error (non-fatal) -->
                   @if (item.status === 'probeError' && item.probeErrorMessage) {
                     <p class="queue-item__status queue-item__status--warn">
                       ⚠ Probe failed: {{ item.probeErrorMessage }} — you can still upload.
                     </p>
                   }
 
-                  <!-- Processing in progress -->
                   @if (item.status === 'processing') {
                     <p class="queue-item__status queue-item__status--info">
                       Transcoding…
@@ -335,7 +326,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </p>
                   }
 
-                  <!-- Processing succeeded -->
                   @if (item.status === 'processed' && item.processedFile) {
                     <p class="queue-item__status queue-item__status--ok">
                       ✨ Processed — {{ formatBytes(item.processedFile.size) }}
@@ -345,21 +335,18 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </p>
                   }
 
-                  <!-- Processing error -->
                   @if (item.status === 'processError' && item.processErrorMessage) {
                     <p class="queue-item__status queue-item__status--err">
                       Processing failed: {{ item.processErrorMessage }}
                     </p>
                   }
 
-                  <!-- Splitting into chunks -->
                   @if (item.status === 'splitting') {
                     <p class="queue-item__status queue-item__status--info">
                       Splitting into {{ item.totalChunks }} chunks…
                     </p>
                   }
 
-                  <!-- Chunked upload progress -->
                   @if (item.status === 'uploading' && item.totalChunks && item.totalChunks > 1) {
                     <p class="queue-item__status queue-item__status--info">
                       Uploading chunk
@@ -367,19 +354,16 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </p>
                   }
 
-                  <!-- Preflight OK -->
                   @if (item.status === 'ready' && item.preflightResult) {
                     <p class="queue-item__status queue-item__status--ok">✓ Ready to upload</p>
                   }
 
-                  <!-- Uploading -->
                   @if (item.status === 'uploading') {
                     <p class="queue-item__status queue-item__status--info">
                       Uploading to Cloudinary…
                     </p>
                   }
 
-                  <!-- Uploaded success -->
                   @if (item.status === 'uploaded' && item.uploadedMedia) {
                     <p class="queue-item__status queue-item__status--ok">✓ Uploaded successfully</p>
                     <p class="queue-item__status queue-item__status--muted">
@@ -388,7 +372,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </p>
                   }
 
-                  <!-- Error (preflight or upload) -->
                   @if (item.status === 'uploadError' && item.errorMessage) {
                     <p class="queue-item__status queue-item__status--err">
                       {{ item.errorMessage }}
@@ -398,7 +381,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
 
                 <!-- Per-item actions -->
                 <div class="queue-item__actions">
-                  <!-- Process (transcode) — available for probed video files -->
                   @if (item.status === 'probed' && item.mimeType.startsWith('video/')) {
                     <button
                       type="button"
@@ -411,7 +393,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Retry processing after failure -->
                   @if (item.status === 'processError') {
                     <button
                       type="button"
@@ -424,7 +405,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Check (preflight) — available from probed, processed, or probeError -->
                   @if (
                     item.status === 'selected' ||
                     item.status === 'probed' ||
@@ -442,7 +422,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Re-check after upload error -->
                   @if (item.status === 'uploadError') {
                     <button
                       type="button"
@@ -455,7 +434,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Upload single file -->
                   @if (item.status === 'ready') {
                     <button
                       type="button"
@@ -468,7 +446,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Remove (not while probing/processing/splitting/uploading/checking) -->
                   @if (
                     item.status !== 'probing' &&
                     item.status !== 'processing' &&
@@ -490,13 +467,12 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
             }
           </ul>
 
-          <!-- ── Summary notices ─────────────────────────────────────────── -->
           @if (uploadedCount() > 0) {
             <div class="queue__notice queue__notice--success" role="status">
               🎉
-              <strong
-                >{{ uploadedCount() }} file{{ uploadedCount() === 1 ? '' : 's' }} uploaded</strong
-              >
+              <strong>
+                {{ uploadedCount() }} file{{ uploadedCount() === 1 ? '' : 's' }} uploaded
+              </strong>
               to your Vault. Visit the
               <a routerLink="/gallery" class="queue__notice-link">Gallery</a>
               to see them.
@@ -505,9 +481,9 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
 
           @if (hasReadyItems() && !isUploadingAny()) {
             <div class="queue__notice" role="note">
-              <strong
-                >{{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready to upload.</strong
-              >
+              <strong>
+                {{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready to upload.
+              </strong>
               Videos have been processed and checked. Click "Upload all" to send them to your Vault.
             </div>
           }
@@ -517,7 +493,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
   `,
   styles: [
     `
-      /* ── Page ─────────────────────────────────────────────────────────── */
       .uploads-page {
         max-width: 720px;
       }
@@ -546,7 +521,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         pointer-events: none;
       }
 
-      /* ── Drop zone ────────────────────────────────────────────────────── */
       .drop-zone {
         display: flex;
         flex-direction: column;
@@ -601,7 +575,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         margin: 0;
       }
 
-      /* ── Queue ────────────────────────────────────────────────────────── */
       .queue {
         margin-top: 0.5rem;
       }
@@ -653,7 +626,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         gap: 0.375rem;
       }
 
-      /* ── Queue item ───────────────────────────────────────────────────── */
       .queue-item {
         display: flex;
         align-items: flex-start;
@@ -779,6 +751,7 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         font-size: 0.75rem;
         margin: 0 0 0.1rem;
       }
+
       .queue-item__status--ok {
         color: #15803d;
       }
@@ -813,7 +786,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         align-items: flex-start;
       }
 
-      /* ── Buttons ──────────────────────────────────────────────────────── */
       .btn {
         display: inline-flex;
         align-items: center;
@@ -869,7 +841,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         background: #fef2f2;
       }
 
-      /* ── Notices ──────────────────────────────────────────────────────── */
       .queue__notice {
         margin-top: 1rem;
         padding: 0.875rem 1rem;
@@ -893,7 +864,6 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         text-decoration: underline;
       }
 
-      /* ── ffmpeg status banner ─────────────────────────────────────────── */
       .ffmpeg-banner {
         display: flex;
         align-items: center;
@@ -954,15 +924,9 @@ export class UploadsPageComponent {
   readonly queue = signal<UploadQueueItem[]>([]);
   readonly isDragging = signal(false);
 
-  /**
-   * Reactive snapshot of the ffmpeg engine load state.
-   * Drives the ffmpeg status banner shown when video files are in the queue.
-   */
   readonly ffmpegState = toSignal(this.videoProcessing.loadState$, {
     initialValue: this.videoProcessing.loadState,
   });
-
-  // ── Computed helpers ────────────────────────────────────────────────────
 
   isCheckingAny(): boolean {
     return this.queue().some((i) => i.status === 'checking');
@@ -980,7 +944,6 @@ export class UploadsPageComponent {
     return this.queue().some((i) => i.status === 'processing' || i.status === 'splitting');
   }
 
-  /** True when any async operation is in flight — disables bulk actions. */
   isBusy(): boolean {
     return (
       this.isCheckingAny() || this.isUploadingAny() || this.isProbingAny() || this.isProcessingAny()
@@ -1011,12 +974,9 @@ export class UploadsPageComponent {
     return this.queue().filter((i) => i.status === 'uploaded').length;
   }
 
-  /** True when at least one video file is in the queue (any status). */
   hasVideoItems(): boolean {
     return this.queue().some((i) => i.mimeType.startsWith('video/'));
   }
-
-  // ── File selection ──────────────────────────────────────────────────────
 
   openFilePicker(): void {
     this.fileInputRef.nativeElement.click();
@@ -1029,8 +989,6 @@ export class UploadsPageComponent {
       input.value = '';
     }
   }
-
-  // ── Drag and drop ───────────────────────────────────────────────────────
 
   onDragOver(event: DragEvent): void {
     event.preventDefault();
@@ -1049,8 +1007,6 @@ export class UploadsPageComponent {
     const files = event.dataTransfer?.files;
     if (files) this.addFiles(Array.from(files));
   }
-
-  // ── Queue management ────────────────────────────────────────────────────
 
   private addFiles(files: File[]): void {
     const newItems: UploadQueueItem[] = files.map((file) => {
@@ -1073,9 +1029,6 @@ export class UploadsPageComponent {
 
     this.queue.update((q) => [...q, ...newItems]);
 
-    // Auto-start the pipeline for each valid item:
-    //   video → probe → preflight → process → (upload on demand)
-    //   image → preflight → (upload on demand)
     for (const item of newItems) {
       if (item.status !== 'selected') continue;
       if (item.mimeType.startsWith('video/')) {
@@ -1094,17 +1047,6 @@ export class UploadsPageComponent {
     this.queue.set([]);
   }
 
-  // ── Probe ────────────────────────────────────────────────────────────────
-
-  /**
-   * Probes a single video file to extract resolution, duration, and codec.
-   * Ensures ffmpeg is loaded first (idempotent). Non-video files are skipped.
-   * Probe failure is non-fatal — the item moves to 'probeError' and the user
-   * can still proceed to preflight and upload.
-   *
-   * On success, automatically chains into preflight (PRD order:
-   * probe → preflight → process → upload).
-   */
   async probeOne(clientId: string): Promise<void> {
     const item = this.queue().find((i) => i.clientId === clientId);
     if (!item || !item.mimeType.startsWith('video/')) return;
@@ -1116,13 +1058,11 @@ export class UploadsPageComponent {
       probeErrorMessage: undefined,
     });
 
-    // Ensure ffmpeg is loaded before probing (load() is idempotent).
     await this.videoProcessing.load();
 
     try {
       const result = await this.videoProcessing.probeVideo(item.file);
       this.patchItem(clientId, { status: 'probed', probeResult: result });
-      // Auto-chain: preflight runs before processing (PRD §6).
       this.runPreflightOne(clientId);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not read video metadata.';
@@ -1130,26 +1070,10 @@ export class UploadsPageComponent {
         status: 'probeError',
         probeErrorMessage: message,
       });
-      // Even on probe failure, auto-run preflight so the user doesn't have
-      // to manually click Check.
       this.runPreflightOne(clientId);
     }
   }
 
-  // ── Process ──────────────────────────────────────────────────────────────
-
-  /**
-   * Transcodes a single video file using the PRD pipeline:
-   *   H.264 CRF 18, downscale to 1080p if height > 1080.
-   *
-   * Requires ffmpeg to be loaded (load() is called automatically).
-   * Progress events flow through VideoProcessingService.progress$ and are
-   * also stored per-item in processingProgress for the UI.
-   *
-   * On success the item moves to 'processed' and processedFile is set,
-   * then automatically chains into uploadOne (the preflight already passed).
-   * On failure the item moves to 'processError' with a clear message.
-   */
   async processOne(clientId: string): Promise<void> {
     const item = this.queue().find((i) => i.clientId === clientId);
     if (!item || !item.mimeType.startsWith('video/')) return;
@@ -1162,7 +1086,6 @@ export class UploadsPageComponent {
       processedFile: null,
     });
 
-    // Subscribe to progress events and route them to the queue item.
     const progressSub = this.videoProcessing.progress$.subscribe((p) => {
       this.patchItem(clientId, {
         processingProgress: { ratio: p.ratio, time: p.time, stage: 'transcoding' },
@@ -1184,8 +1107,6 @@ export class UploadsPageComponent {
         processingProgress: null,
       });
 
-      // Auto-chain: move straight to ready and upload.
-      // Re-read the item to get the saved preflightResult.
       const processed = this.queue().find((i) => i.clientId === clientId);
       if (processed?.preflightResult) {
         this.patchItem(clientId, { status: 'ready' });
@@ -1202,8 +1123,6 @@ export class UploadsPageComponent {
       progressSub.unsubscribe();
     }
   }
-
-  // ── Preflight ───────────────────────────────────────────────────────────
 
   runPreflightAll(): void {
     const pending = this.queue().filter(
@@ -1231,8 +1150,6 @@ export class UploadsPageComponent {
     )
       return;
 
-    // Use the processed file size for preflight when available, so the
-    // server checks capacity against the actual bytes that will be uploaded.
     const sizeForPreflight = item.processedFile?.size ?? item.sizeBytes;
 
     this.patchItem(clientId, {
@@ -1247,9 +1164,6 @@ export class UploadsPageComponent {
         if (result.canUpload) {
           this.patchItem(clientId, { status: 'ready', preflightResult: result });
 
-          // Auto-chain: for video files that haven't been processed yet,
-          // kick off processing now that preflight has confirmed capacity.
-          // (PRD order: probe → preflight → process → upload)
           const current = this.queue().find((i) => i.clientId === clientId);
           if (current && current.mimeType.startsWith('video/') && !current.processedFile) {
             void this.processOne(clientId);
@@ -1280,8 +1194,6 @@ export class UploadsPageComponent {
     });
   }
 
-  // ── Upload ──────────────────────────────────────────────────────────────
-
   uploadAll(): void {
     const ready = this.queue().filter((i) => i.status === 'ready');
     for (const item of ready) {
@@ -1293,10 +1205,8 @@ export class UploadsPageComponent {
     const item = this.queue().find((i) => i.clientId === clientId);
     if (!item || item.status !== 'ready') return;
 
-    // Use the processed (transcoded) file when available; fall back to original.
     const fileToUpload = item.processedFile ?? item.file;
 
-    // Route through chunked upload when the file exceeds the 100 MB ceiling.
     if (fileToUpload.size > MAX_CHUNK_BYTES) {
       await this.uploadChunked(clientId, fileToUpload);
     } else {
@@ -1304,7 +1214,6 @@ export class UploadsPageComponent {
     }
   }
 
-  /** Direct single-part upload for files ≤ 100 MB. */
   private uploadDirect(clientId: string, fileToUpload: File): void {
     this.patchItem(clientId, {
       status: 'uploading',
@@ -1331,9 +1240,7 @@ export class UploadsPageComponent {
     });
   }
 
-  /** Split-then-sequential-upload for files > 100 MB. */
   private async uploadChunked(clientId: string, fileToUpload: File): Promise<void> {
-    // Step 1 — split (synchronous, fast).
     this.patchItem(clientId, {
       status: 'splitting',
       errorMessage: undefined,
@@ -1349,7 +1256,6 @@ export class UploadsPageComponent {
       return;
     }
 
-    // Step 2 — sequential upload.
     this.patchItem(clientId, {
       status: 'uploading',
       totalChunks: splitResult.chunks.length,
@@ -1359,7 +1265,6 @@ export class UploadsPageComponent {
 
     try {
       const response = await this.uploadService.uploadChunked(splitResult, {}, (completedIndex) => {
-        // Update progress after each chunk completes.
         this.patchItem(clientId, {
           currentChunkIndex: completedIndex + 1,
         });
@@ -1379,8 +1284,6 @@ export class UploadsPageComponent {
       });
     }
   }
-
-  // ── Helpers ─────────────────────────────────────────────────────────────
 
   private makeItem(file: File, status: UploadQueueStatus, errorMessage?: string): UploadQueueItem {
     return {

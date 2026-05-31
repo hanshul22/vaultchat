@@ -1,15 +1,15 @@
+import { AsyncPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
-import { AsyncPipe } from '@angular/common';
 
 import { AuthService } from '../../core/services/auth.service';
 
 /**
  * Top-level shell for gallery-web.
  *
- * Provides the persistent navigation bar (Gallery, Albums, Uploads) and the
- * <router-outlet> where page components are rendered. Logout clears the
- * in-memory token and redirects to the auth-web login page.
+ * Provides the persistent navigation bar (Gallery, Albums, Uploads, Shared Spaces)
+ * and the router outlet where page components are rendered. Logout clears the
+ * local auth state and redirects to the login page.
  */
 @Component({
   selector: 'app-gallery-shell',
@@ -39,6 +39,12 @@ import { AuthService } from '../../core/services/auth.service';
             routerLinkActive="gallery-shell__nav-link--active"
             class="gallery-shell__nav-link"
             >Uploads</a
+          >
+          <a
+            routerLink="/shared-spaces"
+            routerLinkActive="gallery-shell__nav-link--active"
+            class="gallery-shell__nav-link"
+            >Shared Spaces</a
           >
         </nav>
 
@@ -154,7 +160,6 @@ export class GalleryShellComponent {
     this.authService.logout().subscribe({
       complete: () => void this.router.navigateByUrl('/login'),
       error: () => {
-        // Clear local state even if the server call fails, then redirect.
         this.authService.clearAuthState();
         void this.router.navigateByUrl('/login');
       },

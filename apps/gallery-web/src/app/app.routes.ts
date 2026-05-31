@@ -4,18 +4,11 @@ import { authGuard } from '@chat-media/shared/auth';
 import { GalleryShellComponent } from './shared/gallery-shell/gallery-shell.component';
 
 export const appRoutes: Route[] = [
-  // Redirect bare root to /gallery.
   {
     path: '',
     redirectTo: 'gallery',
     pathMatch: 'full',
   },
-
-  // All gallery routes live inside the persistent shell and are protected
-  // by the shared auth guard. A failed guard redirects to /login (handled
-  // by the guard itself — gallery-web has no /login route; the guard sends
-  // the user back to auth-web via the /login path which the SPA treats as
-  // a redirect to the auth app in production).
   {
     path: '',
     component: GalleryShellComponent,
@@ -43,10 +36,22 @@ export const appRoutes: Route[] = [
         loadComponent: () =>
           import('./features/uploads/uploads-page.component').then((m) => m.UploadsPageComponent),
       },
+      {
+        path: 'shared-spaces',
+        loadComponent: () =>
+          import('./features/shared-spaces/shared-spaces-page.component').then(
+            (m) => m.SharedSpacesPageComponent,
+          ),
+      },
+      {
+        path: 'shared-spaces/:id',
+        loadComponent: () =>
+          import('./features/shared-space-detail/shared-space-detail-page.component').then(
+            (m) => m.SharedSpaceDetailPageComponent,
+          ),
+      },
     ],
   },
-
-  // Catch-all: redirect unknown paths to /gallery (guard will handle auth).
   {
     path: '**',
     redirectTo: 'gallery',
