@@ -16,6 +16,7 @@ import { CloudinaryAccountsModule } from '../cloudinary-accounts/cloudinary-acco
 import { VaultModule } from '../vault/vault.module';
 import { UsersModule } from '../users/users.module';
 import { StorageSpacesModule } from '../storage-spaces/storage-spaces.module';
+import { ChatModule } from '../chat/chat.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { StorageSpacesModule } from '../storage-spaces/storage-spaces.module';
     VaultModule,
     UsersModule,
     StorageSpacesModule,
+    ChatModule,
     ThrottlerModule.forRoot([
       {
         name: 'short',
