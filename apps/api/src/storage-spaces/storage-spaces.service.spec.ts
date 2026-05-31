@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Media } from '../media/entities/media.entity';
@@ -294,6 +294,207 @@ describe('StorageSpacesService', () => {
 
       const result = await service.assignMedia(SPACE_ID, OWNER_ID, dto);
       expect(result.updated).toBe(1);
+    });
+
+    it('returns updated = 0 when no media owned by the actor matches', async () => {
+      spaceRepo.findOne.mockResolvedValueOnce(makeSpace()).mockResolvedValueOnce(makeSpace());
+      // resolveActor: owner
+      mediaRepo.find.mockResolvedValue([]); // none owned by actor
+
+      const result = await service.assignMedia(SPACE_ID, OWNER_ID, dto);
+      expect(result.updated).toBe(0);
+      expect(mediaRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('non-member/non-owner gets ForbiddenException', async () => {
+      const STRANGER_ID = 'stranger-uuid';
+      // First findOne for the space existence check, second for resolveActor
+      spaceRepo.findOne.mockResolvedValueOnce(makeSpace()).mockResolvedValueOnce(makeSpace());
+      memberRepo.findOne.mockResolvedValue(null); // not a member
+
+      await expect(service.assignMedia(SPACE_ID, STRANGER_ID, dto)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('missing space returns NotFoundException', async () => {
+      spaceRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.assignMedia(SPACE_ID, OWNER_ID, dto)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // ── findAllForUser ────────────────────────────────────────────────────────
+
+  describe('findAllForUser', () => {
+    it('returns owned spaces with isOwner = true and myRole = owner', async () => {
+      const space = makeSpace();
+      spaceRepo.find.mockResolvedValue([space]);
+      memberRepo.find.mockResolvedValue([]);
+
+      // createQueryBuilder chain for memberCounts and mediaCounts
+      const qbMock = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+      };
+      spaceRepo.createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+      memberRepo.createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+      mediaRepo.createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      const results = await service.findAllForUser(OWNER_ID);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].isOwner).toBe(true);
+      expect(results[0].myRole).toBe('owner');
+    });
+
+    it('returns member spaces with isOwner = false and myRole equal to membership role', async () => {
+      const space = makeSpace({ ownerId: 'other-owner' });
+      const membership = {
+        userId: MEMBER_ID,
+        spaceId: SPACE_ID,
+        role: StorageMemberRole.EDITOR,
+        storageSpace: space,
+      };
+      spaceRepo.find.mockResolvedValue([]); // no owned spaces
+      memberRepo.find.mockResolvedValue([membership]);
+
+      const qbMock = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest.fn().mockResolvedValue([]),
+      };
+      spaceRepo.createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+      memberRepo.createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+      mediaRepo.createQueryBuilder = jest.fn().mockReturnValue(qbMock);
+
+      const results = await service.findAllForUser(MEMBER_ID);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].isOwner).toBe(false);
+      expect(results[0].myRole).toBe('editor');
+    });
+
+    it('handles empty results cleanly', async () => {
+      spaceRepo.find.mockResolvedValue([]);
+      memberRepo.find.mockResolvedValue([]);
+
+      const results = await service.findAllForUser(OWNER_ID);
+
+      expect(results).toEqual([]);
+    });
+  });
+
+  // ── findOneForUser ────────────────────────────────────────────────────────
+
+  describe('findOneForUser', () => {
+    it('owner can fetch a space detail result', async () => {
+      const space = makeSpace();
+      spaceRepo.findOne.mockResolvedValue(space);
+      mediaRepo.count.mockResolvedValue(3);
+
+      const result = await service.findOneForUser(SPACE_ID, OWNER_ID);
+
+      expect(result.id).toBe(SPACE_ID);
+      expect(result.myRole).toBe('owner');
+      expect(result.mediaCount).toBe(3);
+    });
+
+    it('member can fetch a space detail result', async () => {
+      const member = makeMember(MEMBER_ID, StorageMemberRole.VIEWER);
+      const space = makeSpace({ members: [member] });
+      spaceRepo.findOne.mockResolvedValue(space);
+      mediaRepo.count.mockResolvedValue(0);
+
+      const result = await service.findOneForUser(SPACE_ID, MEMBER_ID);
+
+      expect(result.myRole).toBe('viewer');
+    });
+
+    it('non-member/non-owner gets ForbiddenException', async () => {
+      const space = makeSpace({ members: [] });
+      spaceRepo.findOne.mockResolvedValue(space);
+
+      await expect(service.findOneForUser(SPACE_ID, 'stranger-uuid')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('missing space returns NotFoundException', async () => {
+      spaceRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.findOneForUser(SPACE_ID, OWNER_ID)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  // ── addMember — additional paths ──────────────────────────────────────────
+
+  describe('addMember — additional paths', () => {
+    it('target user not found returns NotFoundException', async () => {
+      spaceRepo.findOne.mockResolvedValue(makeSpace());
+      userRepo.findOne.mockResolvedValue(null); // user does not exist
+
+      const dto: AddStorageSpaceMemberDto = {
+        userId: 'nonexistent-user',
+        role: StorageSpaceMemberRole.EDITOR,
+      };
+      await expect(service.addMember(SPACE_ID, OWNER_ID, dto)).rejects.toThrow(NotFoundException);
+    });
+
+    it('owner cannot add themselves as a member (ConflictException)', async () => {
+      spaceRepo.findOne.mockResolvedValue(makeSpace());
+      userRepo.findOne.mockResolvedValue(makeUser(OWNER_ID));
+
+      const dto: AddStorageSpaceMemberDto = {
+        userId: OWNER_ID, // same as ownerId
+        role: StorageSpaceMemberRole.EDITOR,
+      };
+      await expect(service.addMember(SPACE_ID, OWNER_ID, dto)).rejects.toThrow(ConflictException);
+    });
+  });
+
+  // ── updateMemberRole — additional paths ───────────────────────────────────
+
+  describe('updateMemberRole — additional paths', () => {
+    it('missing member returns NotFoundException', async () => {
+      spaceRepo.findOne.mockResolvedValue(makeSpace());
+      memberRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateMemberRole(SPACE_ID, OWNER_ID, 'ghost-user', {
+          role: StorageSpaceMemberRole.EDITOR,
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('attempting to update the owner via member record path is rejected (ForbiddenException)', async () => {
+      spaceRepo.findOne.mockResolvedValue(makeSpace());
+
+      await expect(
+        service.updateMemberRole(SPACE_ID, OWNER_ID, OWNER_ID, {
+          role: StorageSpaceMemberRole.EDITOR,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+  });
+
+  // ── removeMember — additional paths ──────────────────────────────────────
+
+  describe('removeMember — additional paths', () => {
+    it('missing member returns NotFoundException', async () => {
+      spaceRepo.findOne.mockResolvedValue(makeSpace());
+      memberRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.removeMember(SPACE_ID, OWNER_ID, 'ghost-user')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });
