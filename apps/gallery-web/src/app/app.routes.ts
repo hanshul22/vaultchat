@@ -1,14 +1,19 @@
 import { Route } from '@angular/router';
-import { authGuard } from './core/guards/auth.guard';
+import { authGuard } from '@chat-media/shared/auth';
+
+import { GalleryShellComponent } from './shared/gallery-shell/gallery-shell.component';
 
 export const appRoutes: Route[] = [
   {
     path: '',
+    redirectTo: 'gallery',
+    pathMatch: 'full',
+  },
+  {
+    path: '',
+    component: GalleryShellComponent,
     canActivate: [authGuard],
-    loadComponent: () =>
-      import('./shared/gallery-shell/gallery-shell.component').then((m) => m.GalleryShellComponent),
     children: [
-      { path: '', redirectTo: 'gallery', pathMatch: 'full' },
       {
         path: 'gallery',
         loadComponent: () =>
@@ -22,7 +27,7 @@ export const appRoutes: Route[] = [
       {
         path: 'albums/:id',
         loadComponent: () =>
-          import('./features/albums/album-detail-page.component').then(
+          import('./features/album-detail/album-detail-page.component').then(
             (m) => m.AlbumDetailPageComponent,
           ),
       },
@@ -47,5 +52,8 @@ export const appRoutes: Route[] = [
       },
     ],
   },
-  { path: '**', redirectTo: '' },
+  {
+    path: '**',
+    redirectTo: 'gallery',
+  },
 ];

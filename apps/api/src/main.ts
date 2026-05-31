@@ -1,23 +1,36 @@
-import { ValidationPipe } from '@nestjs/common';
+import { setDefaultAutoSelectFamily } from 'node:net';
+
+setDefaultAutoSelectFamily(false);
+
+process.on('unhandledRejection', (reason) => {
+  console.error('--- UNHANDLED REJECTION ---');
+  console.error(reason);
+  if (reason && typeof reason === 'object' && 'errors' in reason) {
+    console.error('--- AGGREGATE ERRORS ---');
+    for (const inner of (reason as { errors: unknown[] }).errors) {
+      console.error(inner);
+    }
+  }
+});
+
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
+import cookieParser from 'cookie-parser';
 import Redis from 'ioredis';
+
 import { AppModule } from './app/app.module';
 
-async function bootstrap() {
+async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
 
-  // ── CORS ──────────────────────────────────────────────────────────────────
-  // Allow the Angular dev servers (chat-web :4201, gallery-web :4202) to call
-  // the API. In production, replace with the real frontend origin(s) or read
-  // from an env variable.
   const allowedOrigins = (
     process.env['CORS_ORIGINS'] ??
-    'http://localhost:4201,http://localhost:4202,http://localhost:4200'
+    'http://localhost:4200,http://localhost:4201,http://localhost:4202'
   )
     .split(',')
-    .map((o) => o.trim())
+    .map((origin) => origin.trim())
     .filter(Boolean);
 
   app.enableCors({
@@ -26,9 +39,10 @@ async function bootstrap() {
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
   });
-  // ─────────────────────────────────────────────────────────────────────────
 
   app.setGlobalPrefix('api/v1');
+
+  app.use(cookieParser());
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -38,10 +52,6 @@ async function bootstrap() {
     }),
   );
 
-  // ── Socket.IO Redis adapter ───────────────────────────────────────────────
-  // Wire the adapter so room broadcasts work across multiple API instances.
-  // We create two dedicated pub/sub clients from the same config shape used
-  // by RedisModule — pub/sub clients must be separate connections.
   const redisHost = process.env['REDIS_HOST'] ?? 'localhost';
   const redisPort = parseInt(process.env['REDIS_PORT'] ?? '6379', 10);
   const redisPassword = process.env['REDIS_PASSWORD'];
@@ -52,9 +62,12 @@ async function bootstrap() {
 
   if (redisTls && redisPassword) {
     const redisUrl = `rediss://default:${redisPassword}@${redisHost}:${redisPort}`;
-    const tlsOpts = { tls: { rejectUnauthorized: false, servername: redisHost } };
-    pubClient = new Redis(redisUrl, tlsOpts);
-    subClient = new Redis(redisUrl, tlsOpts);
+    const tlsOptions = {
+      tls: { rejectUnauthorized: false, servername: redisHost },
+    };
+
+    pubClient = new Redis(redisUrl, tlsOptions);
+    subClient = new Redis(redisUrl, tlsOptions);
   } else {
     pubClient = new Redis({ host: redisHost, port: redisPort });
     subClient = pubClient.duplicate();
@@ -62,9 +75,8 @@ async function bootstrap() {
 
   const redisAdapter = createAdapter(pubClient, subClient);
 
-  // Extend the default IoAdapter to inject the Redis adapter.
   class RedisIoAdapter extends IoAdapter {
-    createIOServer(port: number, options?: Record<string, unknown>) {
+    override createIOServer(port: number, options?: Record<string, unknown>) {
       const server = super.createIOServer(port, options);
       server.adapter(redisAdapter);
       return server;
@@ -72,10 +84,11 @@ async function bootstrap() {
   }
 
   app.useWebSocketAdapter(new RedisIoAdapter(app));
-  // ─────────────────────────────────────────────────────────────────────────
 
-  const port = process.env['PORT'] ?? 3000;
+  const port = process.env.PORT ?? 3000;
   await app.listen(port);
+
+  Logger.log(`Application is running on: http://localhost:${port}/api/v1`);
 }
 
-bootstrap();
+void bootstrap();

@@ -105,6 +105,13 @@ export class Media {
   @Column({ name: 'is_orphaned', type: 'boolean', default: false })
   isOrphaned!: boolean;
 
+  /**
+   * True when this media item was assembled from multiple sequential chunks
+   * (totalParts > 1). False for single-part direct uploads.
+   */
+  @Column({ name: 'is_multipart', type: 'boolean', default: false })
+  isMultipart!: boolean;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 

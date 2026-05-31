@@ -49,6 +49,15 @@
     }
   ],
   "targetDefaults": {
+    "lint": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/eslint.config.mjs",
+        "{projectRoot}/eslint.config.mjs"
+      ]
+    },
     "@angular/build:application": {
       "cache": true,
       "dependsOn": ["^build"],
