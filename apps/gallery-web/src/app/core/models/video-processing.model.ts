@@ -19,12 +19,18 @@ export interface FfmpegProgress {
   time: number;
 }
 
+/** Maximum height (px) above which a video requires downscaling. Per PRD: 1080. */
+export const MAX_VIDEO_HEIGHT_PX = 1080;
+
 /**
  * Metadata extracted from a video file by the probe step.
  *
- * Populated by VideoProcessingService.probeVideo() once that method is
- * implemented. All fields are optional because not every container exposes
- * every value.
+ * Width, height, and duration are always populated (via the browser's native
+ * HTMLVideoElement API). Codec and bitrate are populated only when ffmpeg is
+ * available and ffprobe succeeds; they are null otherwise.
+ *
+ * The `requiresDownscale` and `targetMaxHeightPx` fields are derived from
+ * the probe result and drive the next processing decision.
  */
 export interface VideoProbeResult {
   /** Duration in seconds, or null when not determinable. */
@@ -33,10 +39,27 @@ export interface VideoProbeResult {
   width: number | null;
   /** Height of the primary video stream in pixels, or null. */
   height: number | null;
-  /** Detected codec name, e.g. "h264", "hevc", "vp9". */
+  /**
+   * Detected codec name, e.g. "h264", "hevc", "vp9".
+   * Null when ffprobe was not available or did not return a value.
+   */
   codec: string | null;
-  /** Bit-rate in bits per second, or null. */
+  /**
+   * Bit-rate in bits per second.
+   * Null when ffprobe was not available or did not return a value.
+   */
   bitrate: number | null;
+  /**
+   * True when the video height exceeds MAX_VIDEO_HEIGHT_PX (1080) and the
+   * transcoding step must downscale it.
+   */
+  requiresDownscale: boolean;
+  /**
+   * The target height for the transcoding step.
+   * MAX_VIDEO_HEIGHT_PX when requiresDownscale is true; the source height
+   * (or null if unknown) when no downscale is needed.
+   */
+  targetMaxHeightPx: number | null;
 }
 
 /**

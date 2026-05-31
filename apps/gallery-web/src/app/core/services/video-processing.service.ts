@@ -4,6 +4,7 @@ import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import {
   FfmpegLoadState,
   FfmpegProgress,
+  MAX_VIDEO_HEIGHT_PX,
   VideoProbeResult,
   VideoProcessingRequest,
   VideoProcessingResult,
@@ -22,16 +23,14 @@ const CORE_MT_BASE = 'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm';
  * ── Architecture ──────────────────────────────────────────────────────────
  * • ffmpeg.wasm is lazy-loaded on first demand to avoid blocking the initial
  *   page load with the ~30 MB WASM binary.
- * • The multi-threaded core (@ffmpeg/core-mt) is loaded from the unpkg CDN.
- *   SharedArrayBuffer must be available (requires COOP/COEP headers in
- *   production). If the load fails for any reason, the service transitions
- *   to 'failed' and the UI falls back to direct upload without compression.
- * • probeVideo() and processVideo() remain stubs in this step. They throw a
- *   clearly labelled "not implemented yet" error so the next step can fill
- *   in the real logic without changing the service interface.
+ * • probeVideo() uses a hybrid approach:
+ *     1. HTMLVideoElement (always available) → width, height, duration.
+ *     2. ffprobe via ffmpeg.wasm (when loaded) → codec, bitrate.
+ *   This ensures probe results are available even when ffmpeg fails to load.
+ * • processVideo() remains a stub — transcoding is implemented in the next step.
  *
  * ── PRD pipeline (next step) ──────────────────────────────────────────────
- *   1. Probe: read resolution, codec, duration, bitrate via ffprobe.
+ *   1. ✅ Probe: read resolution, codec, duration, bitrate.
  *   2. Decide: skip transcoding if already H.264 ≤ 1080p and ≤ 100 MB.
  *   3. Transcode: H.264 CRF 18, downscale to 1080p if needed.
  *   4. (Later) Split: if output > 100 MB, chunk for multipart upload.
@@ -109,20 +108,49 @@ export class VideoProcessingService implements OnDestroy {
   }
 
   /**
-   * Probes a video file to extract metadata (resolution, codec, duration).
+   * Probes a video file to extract metadata needed for the processing decision.
    *
-   * ── NOT IMPLEMENTED YET ──
-   * Real probe logic (ffprobe via ffmpeg.ffprobe()) will be added in the
-   * next step.
+   * Uses a hybrid approach for maximum reliability:
+   *   1. HTMLVideoElement (browser-native, always available) → width, height, duration.
+   *   2. ffprobe via ffmpeg.wasm (when loaded) → codec, bitrate.
    *
-   * @throws {Error} Always — "VideoProcessingService.probeVideo: not implemented yet"
+   * The result always includes `requiresDownscale` and `targetMaxHeightPx`
+   * so the next step can decide whether to transcode without re-reading the file.
+   *
+   * @param file  The video File to probe.
+   * @returns     Populated VideoProbeResult.
+   * @throws      When the browser cannot load the video metadata at all.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async probeVideo(_file: File): Promise<VideoProbeResult> {
-    throw new Error(
-      'VideoProcessingService.probeVideo: not implemented yet. ' +
-        'Real probe logic will be added in the next step.',
-    );
+  async probeVideo(file: File): Promise<VideoProbeResult> {
+    // Step 1 — native browser metadata (fast, no WASM required).
+    const native = await this.probeNative(file);
+
+    // Step 2 — ffprobe for codec/bitrate (best-effort, skipped when not ready).
+    let codec: string | null = null;
+    let bitrate: number | null = null;
+
+    if (this.isReady && this.ffmpegInstance) {
+      try {
+        const ffprobeResult = await this.runFfprobe(file);
+        codec = ffprobeResult.codec;
+        bitrate = ffprobeResult.bitrate;
+      } catch {
+        // ffprobe failure is non-fatal — codec/bitrate remain null.
+      }
+    }
+
+    const height = native.height;
+    const requiresDownscale = height !== null && height > MAX_VIDEO_HEIGHT_PX;
+
+    return {
+      durationSeconds: native.durationSeconds,
+      width: native.width,
+      height,
+      codec,
+      bitrate,
+      requiresDownscale,
+      targetMaxHeightPx: requiresDownscale ? MAX_VIDEO_HEIGHT_PX : height,
+    };
   }
 
   /**
@@ -149,7 +177,6 @@ export class VideoProcessingService implements OnDestroy {
    */
   teardown(): void {
     if (this.ffmpegInstance) {
-      // Terminate the web worker spawned by ffmpeg.wasm.
       (this.ffmpegInstance as { terminate?: () => void }).terminate?.();
       this.ffmpegInstance = null;
     }
@@ -157,27 +184,13 @@ export class VideoProcessingService implements OnDestroy {
     this._loadState.next('idle');
   }
 
-  // ── Private ──────────────────────────────────────────────────────────────
+  // ── Private — loader ─────────────────────────────────────────────────────
 
-  /**
-   * Performs the actual WASM load via a dynamic import of @ffmpeg/ffmpeg.
-   *
-   * Uses a dynamic import so the ~30 MB WASM binary is only fetched when
-   * the user has video files in the queue, not at app startup.
-   *
-   * The @ffmpeg/ffmpeg package exports `"node": "./dist/esm/empty.mjs"` so
-   * in Jest/Node environments the import resolves to an empty module. We
-   * guard against this by checking that FFmpeg is a real constructor before
-   * proceeding, and transition to 'failed' gracefully if it is not.
-   */
   private async doLoad(): Promise<void> {
     try {
-      // Dynamic import — resolved by the Angular bundler in the browser,
-      // and to an empty module in Node/Jest (handled below).
       const ffmpegModule = await import('@ffmpeg/ffmpeg');
       const FFmpegClass = ffmpegModule.FFmpeg;
 
-      // Guard: in Node/Jest the module is empty, so FFmpeg will be undefined.
       if (typeof FFmpegClass !== 'function') {
         throw new Error(
           'ffmpeg.wasm is not available in this environment ' +
@@ -187,14 +200,10 @@ export class VideoProcessingService implements OnDestroy {
 
       const ffmpeg = new FFmpegClass();
 
-      // Wire progress events into the public progress$ stream.
-      // The @ffmpeg/ffmpeg v0.12 progress event uses `progress` (0–1), not `ratio`.
       ffmpeg.on('progress', ({ progress, time }: { progress: number; time: number }) => {
         this._progress.next({ ratio: progress, time });
       });
 
-      // Load the multi-threaded WASM core from the unpkg CDN.
-      // All three URLs are required for the MT variant.
       await ffmpeg.load({
         coreURL: `${CORE_MT_BASE}/ffmpeg-core.js`,
         wasmURL: `${CORE_MT_BASE}/ffmpeg-core.wasm`,
@@ -208,6 +217,127 @@ export class VideoProcessingService implements OnDestroy {
       this._loadError.next(message);
       this._loadState.next('failed');
       this.loadPromise = null;
+    }
+  }
+
+  // ── Private — probe helpers ───────────────────────────────────────────────
+
+  /**
+   * Reads width, height, and duration from the browser's native video element.
+   * Creates a temporary object URL, loads it into a hidden <video>, reads the
+   * metadata, then immediately revokes the URL to free memory.
+   *
+   * @throws When the browser fires an error event instead of loadedmetadata.
+   */
+  private probeNative(
+    file: File,
+  ): Promise<{ width: number | null; height: number | null; durationSeconds: number | null }> {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+
+      const cleanup = (): void => {
+        URL.revokeObjectURL(url);
+        video.src = '';
+        video.load();
+      };
+
+      video.addEventListener(
+        'loadedmetadata',
+        () => {
+          const width = video.videoWidth || null;
+          const height = video.videoHeight || null;
+          const durationSeconds = isFinite(video.duration) ? video.duration : null;
+          cleanup();
+          resolve({ width, height, durationSeconds });
+        },
+        { once: true },
+      );
+
+      video.addEventListener(
+        'error',
+        () => {
+          cleanup();
+          reject(new Error(`Browser could not load video metadata for "${file.name}".`));
+        },
+        { once: true },
+      );
+
+      video.src = url;
+    });
+  }
+
+  /**
+   * Runs ffprobe on the file to extract codec and bitrate.
+   *
+   * Writes the file into the ffmpeg virtual FS, runs ffprobe with JSON output,
+   * reads the result, then cleans up. Only called when ffmpeg is ready.
+   *
+   * Returns null for both fields when ffprobe output cannot be parsed.
+   */
+  private async runFfprobe(file: File): Promise<{ codec: string | null; bitrate: number | null }> {
+    const ffmpeg = this.ffmpegInstance as {
+      writeFile: (path: string, data: Uint8Array) => Promise<unknown>;
+      ffprobe: (args: string[], timeout?: number) => Promise<number>;
+      readFile: (path: string, encoding?: string) => Promise<string | Uint8Array>;
+      deleteFile: (path: string) => Promise<unknown>;
+    };
+
+    const inputName = `probe_input_${Date.now()}`;
+    const outputName = `probe_output_${Date.now()}.json`;
+
+    try {
+      const buffer = await file.arrayBuffer();
+      await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
+
+      await ffmpeg.ffprobe([
+        '-v',
+        'quiet',
+        '-print_format',
+        'json',
+        '-show_streams',
+        '-show_format',
+        inputName,
+        '-o',
+        outputName,
+      ]);
+
+      const raw = await ffmpeg.readFile(outputName, 'utf8');
+      const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw as Uint8Array);
+
+      return this.parseFfprobeJson(text);
+    } finally {
+      // Best-effort cleanup — ignore errors from deleteFile.
+      await ffmpeg.deleteFile(inputName).catch(() => undefined);
+      await ffmpeg.deleteFile(outputName).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Parses the JSON output of ffprobe to extract codec name and bitrate.
+   * Returns nulls for any field that cannot be found or parsed.
+   */
+  private parseFfprobeJson(json: string): { codec: string | null; bitrate: number | null } {
+    try {
+      const parsed = JSON.parse(json) as {
+        streams?: Array<{ codec_name?: string; codec_type?: string }>;
+        format?: { bit_rate?: string };
+      };
+
+      const videoStream = parsed.streams?.find((s) => s.codec_type === 'video');
+      const codec = videoStream?.codec_name ?? null;
+
+      const bitrateStr = parsed.format?.bit_rate;
+      const bitrate = bitrateStr != null && bitrateStr !== '' ? parseInt(bitrateStr, 10) : null;
+
+      return {
+        codec: codec ?? null,
+        bitrate: bitrate !== null && !isNaN(bitrate) ? bitrate : null,
+      };
+    } catch {
+      return { codec: null, bitrate: null };
     }
   }
 }

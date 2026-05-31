@@ -7,13 +7,14 @@ import {
   ViewChild,
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
-import { DatePipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import { toSignal } from '@angular/core/rxjs-interop';
 
 import { UploadService } from '../../core/services/upload.service';
 import { VideoProcessingService } from '../../core/services/video-processing.service';
 import { UploadQueueItem, UploadQueueStatus } from '../../core/models/upload-queue-item.model';
 import { PreflightRejectReason } from '../../core/models/media-upload-preflight.model';
+import { VideoProbeResult } from '../../core/models/video-processing.model';
 
 // ── MIME allowlist (mirrors backend media.constants.ts exactly) ───────────────
 const ALLOWED_MIME_TYPES = [
@@ -51,6 +52,14 @@ function preflightReasonMessage(reason: PreflightRejectReason | undefined): stri
   return 'The server rejected this file. Check your Vault capacity.';
 }
 
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return '—';
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
   const body = err.error as { reason?: string; message?: string } | null;
   switch (err.status) {
@@ -76,17 +85,18 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
  * /uploads — upload queue with preflight validation and direct upload execution.
  *
  * State machine per file:
- *   selected → checking → ready → uploading → uploaded
- *                       ↘ uploadError ↗ (retry)
+ *   video:  selected → probing → probed → checking → ready → uploading → uploaded
+ *   image:  selected → checking → ready → uploading → uploaded
+ *   either: any → uploadError (retryable)
  *
- * VideoProcessingService is injected and its load state is surfaced in the UI
- * so video files show whether ffmpeg.wasm is available. Real transcoding
- * (H.264 CRF 18, 1080p downscale) is wired in the next step.
+ * VideoProcessingService probes video files automatically on selection to
+ * surface resolution, duration, and whether downscaling will be needed.
+ * Actual transcoding (H.264 CRF 18, 1080p downscale) is wired in the next step.
  */
 @Component({
   selector: 'app-uploads-page',
   standalone: true,
-  imports: [DatePipe],
+  imports: [DatePipe, DecimalPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="uploads-page">
@@ -228,11 +238,20 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                 <!-- Status icon -->
                 <span class="queue-item__icon" aria-hidden="true">
                   @switch (item.status) {
+                    @case ('probing') {
+                      <span class="queue-item__spinner queue-item__spinner--probe"></span>
+                    }
                     @case ('checking') {
                       <span class="queue-item__spinner"></span>
                     }
                     @case ('uploading') {
                       <span class="queue-item__spinner queue-item__spinner--upload"></span>
+                    }
+                    @case ('probed') {
+                      🎬
+                    }
+                    @case ('probeError') {
+                      ⚠️
                     }
                     @case ('ready') {
                       ✅
@@ -257,6 +276,35 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                   <p class="queue-item__meta">
                     {{ formatBytes(item.sizeBytes) }} · {{ item.mimeType }}
                   </p>
+
+                  <!-- Probing -->
+                  @if (item.status === 'probing') {
+                    <p class="queue-item__status queue-item__status--info">Analysing video…</p>
+                  }
+
+                  <!-- Probe result -->
+                  @if (item.probeResult) {
+                    <p class="queue-item__status queue-item__status--probe">
+                      {{ item.probeResult.width }}×{{ item.probeResult.height }} ·
+                      {{ formatDuration(item.probeResult.durationSeconds) }}
+                      @if (item.probeResult.codec) {
+                        · {{ item.probeResult.codec }}
+                      }
+                      @if (item.probeResult.requiresDownscale) {
+                        ·
+                        <strong class="queue-item__downscale-warn"
+                          >⬇ will downscale to 1080p</strong
+                        >
+                      }
+                    </p>
+                  }
+
+                  <!-- Probe error (non-fatal) -->
+                  @if (item.status === 'probeError' && item.probeErrorMessage) {
+                    <p class="queue-item__status queue-item__status--warn">
+                      ⚠ Probe failed: {{ item.probeErrorMessage }} — you can still upload.
+                    </p>
+                  }
 
                   <!-- Preflight OK -->
                   @if (item.status === 'ready' && item.preflightResult) {
@@ -295,8 +343,12 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
 
                 <!-- Per-item actions -->
                 <div class="queue-item__actions">
-                  <!-- Check (preflight) -->
-                  @if (item.status === 'selected') {
+                  <!-- Check (preflight) — available from selected, probed, or probeError -->
+                  @if (
+                    item.status === 'selected' ||
+                    item.status === 'probed' ||
+                    item.status === 'probeError'
+                  ) {
                     <button
                       type="button"
                       class="btn btn--sm btn--ghost"
@@ -308,7 +360,7 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Re-check after error -->
+                  <!-- Re-check after upload error -->
                   @if (item.status === 'uploadError') {
                     <button
                       type="button"
@@ -334,8 +386,12 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
                     </button>
                   }
 
-                  <!-- Remove (not while uploading/checking) -->
-                  @if (item.status !== 'uploading' && item.status !== 'checking') {
+                  <!-- Remove (not while probing/uploading/checking) -->
+                  @if (
+                    item.status !== 'probing' &&
+                    item.status !== 'uploading' &&
+                    item.status !== 'checking'
+                  ) {
                     <button
                       type="button"
                       class="btn btn--sm btn--danger-ghost"
@@ -547,6 +603,18 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
         border-color: #e0e7ff;
         background: #f5f3ff;
       }
+      .queue-item[data-status='probing'] {
+        border-color: #fde68a;
+        background: #fffbeb;
+      }
+      .queue-item[data-status='probed'] {
+        border-color: #a5f3fc;
+        background: #f0f9ff;
+      }
+      .queue-item[data-status='probeError'] {
+        border-color: #fde68a;
+        background: #fffbeb;
+      }
 
       .queue-item__icon {
         font-size: 1.25rem;
@@ -570,6 +638,11 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
       .queue-item__spinner--upload {
         border-color: #bfdbfe;
         border-top-color: #2563eb;
+      }
+
+      .queue-item__spinner--probe {
+        border-color: #fde68a;
+        border-top-color: #d97706;
       }
 
       @keyframes spin {
@@ -615,6 +688,19 @@ function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
       .queue-item__status--muted {
         color: #9ca3af;
         font-size: 0.7rem;
+      }
+
+      .queue-item__status--probe {
+        color: #0369a1;
+      }
+
+      .queue-item__status--warn {
+        color: #92400e;
+      }
+
+      .queue-item__downscale-warn {
+        color: #b45309;
+        font-weight: 600;
       }
 
       .queue-item__actions {
@@ -783,13 +869,23 @@ export class UploadsPageComponent {
     return this.queue().some((i) => i.status === 'uploading');
   }
 
+  isProbingAny(): boolean {
+    return this.queue().some((i) => i.status === 'probing');
+  }
+
   /** True when any async operation is in flight — disables bulk actions. */
   isBusy(): boolean {
-    return this.isCheckingAny() || this.isUploadingAny();
+    return this.isCheckingAny() || this.isUploadingAny() || this.isProbingAny();
   }
 
   hasPendingItems(): boolean {
-    return this.queue().some((i) => i.status === 'selected' || i.status === 'uploadError');
+    return this.queue().some(
+      (i) =>
+        i.status === 'selected' ||
+        i.status === 'probed' ||
+        i.status === 'probeError' ||
+        i.status === 'uploadError',
+    );
   }
 
   hasReadyItems(): boolean {
@@ -866,12 +962,13 @@ export class UploadsPageComponent {
 
     this.queue.update((q) => [...q, ...newItems]);
 
-    // Trigger lazy-load of ffmpeg.wasm as soon as the first video file
-    // enters the queue, so the engine is ready by the time the user clicks
-    // Upload. load() is idempotent — safe to call on every add.
-    const hasVideo = newItems.some((i) => i.mimeType.startsWith('video/'));
-    if (hasVideo && this.videoProcessing.loadState === 'idle') {
-      void this.videoProcessing.load();
+    // For video files: trigger probe immediately (which also ensures ffmpeg
+    // is loaded). For image files: nothing extra needed.
+    const videoItems = newItems.filter(
+      (i) => i.status === 'selected' && i.mimeType.startsWith('video/'),
+    );
+    for (const item of videoItems) {
+      void this.probeOne(item.clientId);
     }
   }
 
@@ -881,6 +978,40 @@ export class UploadsPageComponent {
 
   clearQueue(): void {
     this.queue.set([]);
+  }
+
+  // ── Probe ────────────────────────────────────────────────────────────────
+
+  /**
+   * Probes a single video file to extract resolution, duration, and codec.
+   * Ensures ffmpeg is loaded first (idempotent). Non-video files are skipped.
+   * Probe failure is non-fatal — the item moves to 'probeError' and the user
+   * can still proceed to preflight and upload.
+   */
+  async probeOne(clientId: string): Promise<void> {
+    const item = this.queue().find((i) => i.clientId === clientId);
+    if (!item || !item.mimeType.startsWith('video/')) return;
+    if (item.status === 'probing' || item.status === 'uploading') return;
+
+    this.patchItem(clientId, {
+      status: 'probing',
+      probeResult: null,
+      probeErrorMessage: undefined,
+    });
+
+    // Ensure ffmpeg is loaded before probing (load() is idempotent).
+    await this.videoProcessing.load();
+
+    try {
+      const result = await this.videoProcessing.probeVideo(item.file);
+      this.patchItem(clientId, { status: 'probed', probeResult: result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not read video metadata.';
+      this.patchItem(clientId, {
+        status: 'probeError',
+        probeErrorMessage: message,
+      });
+    }
   }
 
   // ── Preflight ───────────────────────────────────────────────────────────
@@ -896,7 +1027,13 @@ export class UploadsPageComponent {
 
   runPreflightOne(clientId: string): void {
     const item = this.queue().find((i) => i.clientId === clientId);
-    if (!item || item.status === 'checking' || item.status === 'uploading') return;
+    if (
+      !item ||
+      item.status === 'checking' ||
+      item.status === 'uploading' ||
+      item.status === 'probing'
+    )
+      return;
 
     this.patchItem(clientId, {
       status: 'checking',
@@ -993,4 +1130,10 @@ export class UploadsPageComponent {
   }
 
   readonly formatBytes = formatBytes;
+  readonly formatDuration = formatDuration;
+
+  /** Exposes VideoProbeResult type for template type-checking. */
+  asProbeResult(v: unknown): VideoProbeResult | null {
+    return v as VideoProbeResult | null;
+  }
 }
