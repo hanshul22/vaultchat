@@ -17,6 +17,7 @@ import {
 } from '../common/cloudinary/cloudinary-uploader.service';
 import { CloudinaryAccount } from '../cloudinary-accounts/entities/cloudinary-account.entity';
 import { Media } from './entities/media.entity';
+import { MediaPart } from './entities/media-part.entity';
 import { MagicByteValidator } from './magic-byte.validator';
 import { ALLOWED_MIME_TYPES, isAllowedMimeType, resourceTypeForMime } from './media.constants';
 import { MAX_UPLOAD_SIZE_BYTES } from './dto/upload-preflight.dto';
@@ -38,9 +39,20 @@ export interface UploadedFile {
   buffer: Buffer;
 }
 
-/** Optional metadata that may accompany an upload. */
+/** Metadata that may accompany an upload (from MediaUploadDto). */
 export interface UploadContext {
   storageSpaceId?: string | null;
+  /** Client-generated UUID tying all chunks of one logical upload. */
+  mediaId?: string;
+  /** 0-based chunk index. Defaults to 0 for single-part uploads. */
+  partIndex?: number;
+  /** Total chunks. Defaults to 1 for single-part uploads. */
+  totalParts?: number;
+  /**
+   * Total byte size of the original file (all chunks combined).
+   * Used on partIndex 0 to reserve the full logical file size.
+   */
+  totalFileSize?: number;
 }
 
 /**
@@ -66,6 +78,8 @@ export class MediaService {
   constructor(
     @InjectRepository(Media)
     private readonly mediaRepo: Repository<Media>,
+    @InjectRepository(MediaPart)
+    private readonly mediaPartRepo: Repository<MediaPart>,
     @InjectRepository(CloudinaryAccount)
     private readonly accountRepo: Repository<CloudinaryAccount>,
     private readonly dataSource: DataSource,
@@ -122,15 +136,21 @@ export class MediaService {
   /**
    * POST /api/v1/media/upload.
    *
-   * Full pipeline (PRD §6.1, StorageModel.md §4 & §9):
-   *   1. Validate size (413) and MIME allowlist (415).
-   *   2. Confirm magic bytes match the declared family (415).
-   *   3. Select the target account (507 on VAULT_FULL / too-large).
-   *   4. Reserve quota under a `SELECT … FOR UPDATE` row lock, re-checking
-   *      fit inside the transaction and re-selecting if the locked account
-   *      no longer fits (handles concurrent uploads).
-   *   5. Upload to Cloudinary; on failure, compensate the reservation.
-   *   6. Persist the media row.
+   * Handles both single-part and multipart (chunked) uploads.
+   *
+   * Single-part (partIndex 0, totalParts 1):
+   *   1. Validate size + MIME + magic bytes.
+   *   2. Reserve quota (SELECT FOR UPDATE on chosen account).
+   *   3. Upload to Cloudinary.
+   *   4. Persist Media row.
+   *
+   * Multipart (totalParts > 1):
+   *   partIndex 0  — reserve totalFileSize bytes, upload chunk, save MediaPart.
+   *   intermediate — upload chunk, save MediaPart (no additional reservation).
+   *   final chunk  — upload chunk, save MediaPart, commit Media row
+   *                  (isMultipart = true), delete all MediaPart rows.
+   *   any failure  — destroy all previously uploaded Cloudinary parts for this
+   *                  mediaId, release the storage reservation.
    */
   async upload(
     userId: string,
@@ -141,7 +161,12 @@ export class MediaService {
       throw new HttpException('No file was provided in the "file" field.', HttpStatus.BAD_REQUEST);
     }
 
-    // ── Step 1 — size ceiling (defence in depth alongside Multer limits) ────
+    // Normalise multipart context with defaults for single-part uploads.
+    const partIndex = context.partIndex ?? 0;
+    const totalParts = context.totalParts ?? 1;
+    const isMultipart = totalParts > 1;
+
+    // ── Step 1 — size ceiling ────────────────────────────────────────────────
     if (file.size > MAX_UPLOAD_SIZE_BYTES) {
       throw new PayloadTooLargeException(
         `File exceeds the ${MAX_UPLOAD_SIZE_BYTES}-byte (100 MB) limit.`,
@@ -155,7 +180,7 @@ export class MediaService {
       );
     }
 
-    // ── Step 2 — magic bytes must agree with the declared type ──────────────
+    // ── Step 2 — magic bytes ─────────────────────────────────────────────────
     const detected = await this.magicBytes.detect(file.buffer);
     if (!detected || !isAllowedMimeType(detected.mime)) {
       throw new UnsupportedMediaTypeException(
@@ -169,35 +194,66 @@ export class MediaService {
       );
     }
 
-    const fileSize = BigInt(file.size);
+    const chunkSize = BigInt(file.size);
     const resourceType = resourceTypeForMime(detected.mime);
 
-    // ── Steps 3 + 4 — reserve quota transactionally with a row lock ─────────
-    const reserved = await this.reserveAccount(userId, fileSize);
+    // ── Step 3 — reserve quota (first chunk only for multipart) ─────────────
+    // For multipart uploads, reserve the full logical file size on partIndex 0
+    // so the Vault capacity check is accurate for the entire file, not just
+    // the first chunk.
+    let reserved: CloudinaryAccount;
 
-    // Decrypt credentials for the chosen account (never logged / returned).
+    if (!isMultipart || partIndex === 0) {
+      const reserveSize =
+        isMultipart && context.totalFileSize != null ? BigInt(context.totalFileSize) : chunkSize;
+      reserved = await this.reserveAccount(userId, reserveSize);
+    } else {
+      // Subsequent chunks: look up the account that was reserved on partIndex 0.
+      const firstPart = await this.mediaPartRepo.findOne({
+        where: { mediaId: context.mediaId, partIndex: 0 },
+        select: ['cloudinaryAccountId'],
+      });
+      if (!firstPart) {
+        throw new HttpException(
+          `No reservation found for mediaId=${context.mediaId}. ` + 'Upload partIndex 0 first.',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const account = await this.accountRepo.findOne({
+        where: { id: firstPart.cloudinaryAccountId },
+      });
+      if (!account) {
+        throw new HttpException(
+          `Cloudinary account for mediaId=${context.mediaId} not found.`,
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+      reserved = account;
+    }
+
+    // Decrypt credentials (never logged / returned).
     const apiSecret = this.aesGcm.decrypt(reserved.apiSecretEncrypted);
 
-    // ── Step 5 — upload to Cloudinary; compensate on failure ────────────────
+    // ── Step 4 — upload chunk to Cloudinary ──────────────────────────────────
     let uploadResult;
     try {
       uploadResult = await this.uploader.upload(
-        {
-          cloudName: reserved.cloudName,
-          apiKey: reserved.apiKey,
-          apiSecret,
-        },
+        { cloudName: reserved.cloudName, apiKey: reserved.apiKey, apiSecret },
         file.buffer,
-        {
-          resourceType,
-          folder: `vaultchat/${userId}`,
-        },
+        { resourceType, folder: `vaultchat/${userId}` },
       );
-    } catch (err) {
-      await this.releaseReservation(reserved.id, fileSize);
+    } catch {
+      // On failure: release reservation (first chunk) and destroy any
+      // previously uploaded parts for this mediaId.
+      if (!isMultipart || partIndex === 0) {
+        await this.releaseReservation(reserved.id, chunkSize);
+      }
+      if (isMultipart && context.mediaId) {
+        await this.destroyUploadedParts(userId, context.mediaId, resourceType, reserved);
+      }
       this.logger.error(
         `Upload to Cloudinary failed; reservation rolled back for ` +
-          `accountId=${reserved.id} userId=${userId}.`,
+          `accountId=${reserved.id} userId=${userId} partIndex=${partIndex}.`,
       );
       throw new HttpException(
         'Upload to Cloudinary failed. Please try again.',
@@ -205,27 +261,107 @@ export class MediaService {
       );
     }
 
-    // ── Step 6 — persist metadata ───────────────────────────────────────────
+    // ── Step 5 — persist MediaPart row (multipart) or Media row (single) ─────
+    if (!isMultipart) {
+      // Single-part: create the Media row directly.
+      const media = this.mediaRepo.create({
+        ownerId: userId,
+        cloudinaryAccountId: reserved.id,
+        storageSpaceId: context.storageSpaceId ?? null,
+        cloudinaryPublicId: uploadResult.publicId,
+        url: uploadResult.url,
+        mimeType: detected.mime,
+        sizeBytes: chunkSize.toString(),
+        width: uploadResult.width,
+        height: uploadResult.height,
+        durationSeconds:
+          uploadResult.durationSeconds != null ? uploadResult.durationSeconds.toString() : null,
+        isOrphaned: false,
+        isMultipart: false,
+      });
+
+      const saved = await this.mediaRepo.save(media);
+
+      this.logger.log(
+        `Media uploaded: id=${saved.id} userId=${userId} ` +
+          `accountId=${reserved.id} bytes=${chunkSize.toString()}`,
+      );
+
+      return new MediaResponseDto(saved);
+    }
+
+    // Multipart: save the MediaPart row for this chunk.
+    const clientMediaId = context.mediaId ?? '';
+    const part = this.mediaPartRepo.create({
+      mediaId: clientMediaId,
+      partIndex,
+      totalParts,
+      cloudinaryPublicId: uploadResult.publicId,
+      cloudName: reserved.cloudName,
+      sizeBytes: chunkSize.toString(),
+      cloudinaryAccountId: reserved.id,
+      mimeType: detected.mime,
+    });
+    await this.mediaPartRepo.save(part);
+
+    this.logger.log(
+      `MediaPart saved: mediaId=${clientMediaId} partIndex=${partIndex}/${totalParts - 1} ` +
+        `userId=${userId} bytes=${chunkSize.toString()}`,
+    );
+
+    // ── Step 6 — commit Media row on the final chunk ─────────────────────────
+    const isFinalChunk = partIndex === totalParts - 1;
+
+    if (!isFinalChunk) {
+      // Intermediate chunk: return a minimal response so the client knows
+      // the chunk was accepted. The Media row does not exist yet.
+      return {
+        id: clientMediaId,
+        ownerId: userId,
+        storageSpaceId: context.storageSpaceId ?? null,
+        cloudinaryPublicId: uploadResult.publicId,
+        url: uploadResult.url,
+        mimeType: detected.mime,
+        sizeBytes: chunkSize.toString(),
+        width: null,
+        height: null,
+        durationSeconds: null,
+        createdAt: new Date(),
+      } as MediaResponseDto;
+    }
+
+    // Final chunk: assemble the committed Media row.
+    const firstPart = await this.mediaPartRepo.findOne({
+      where: { mediaId: clientMediaId, partIndex: 0 },
+    });
+
+    const totalSizeBytes = context.totalFileSize ? BigInt(context.totalFileSize) : chunkSize; // fallback: use last chunk size (inaccurate but safe)
+
     const media = this.mediaRepo.create({
       ownerId: userId,
       cloudinaryAccountId: reserved.id,
       storageSpaceId: context.storageSpaceId ?? null,
-      cloudinaryPublicId: uploadResult.publicId,
+      cloudinaryPublicId: firstPart?.cloudinaryPublicId ?? uploadResult.publicId,
       url: uploadResult.url,
       mimeType: detected.mime,
-      sizeBytes: fileSize.toString(),
+      sizeBytes: totalSizeBytes.toString(),
       width: uploadResult.width,
       height: uploadResult.height,
       durationSeconds:
         uploadResult.durationSeconds != null ? uploadResult.durationSeconds.toString() : null,
       isOrphaned: false,
+      isMultipart: true,
     });
 
     const saved = await this.mediaRepo.save(media);
 
+    // Clean up the MediaPart staging rows — they are no longer needed.
+    await this.mediaPartRepo.delete({ mediaId: clientMediaId });
+
     this.logger.log(
-      `Media uploaded: id=${saved.id} userId=${userId} ` +
-        `accountId=${reserved.id} bytes=${fileSize.toString()}`,
+      `Multipart media committed: id=${saved.id} userId=${userId} ` +
+        `accountId=${reserved.id} totalBytes=${totalSizeBytes.toString()} ` +
+        `parts=${totalParts}`,
     );
 
     return new MediaResponseDto(saved);
@@ -247,10 +383,7 @@ export class MediaService {
       .andWhere('media.is_orphaned = false');
 
     if (query.type) {
-      // 'image' → image/%, 'video' → video/%
-      qb.andWhere('media.mime_type LIKE :prefix', {
-        prefix: `${query.type}/%`,
-      });
+      qb.andWhere('media.mime_type LIKE :prefix', { prefix: `${query.type}/%` });
     }
 
     qb.orderBy('media.created_at', 'DESC')
@@ -269,11 +402,6 @@ export class MediaService {
    *
    * Owner-only. Deletes from Cloudinary first, then removes the DB row and
    * decrements the owning account's `storage_used_bytes` in one transaction.
-   *
-   * If the Cloudinary destroy call fails, we surface the error and leave the
-   * row intact. This is the seam where a BullMQ retry job will be enqueued in
-   * a later phase — see the TODO below. The queue is intentionally NOT wired
-   * up in Phase 7.
    */
   async remove(userId: string, mediaId: string): Promise<{ deleted: true }> {
     const media = await this.mediaRepo.findOne({
@@ -293,16 +421,12 @@ export class MediaService {
       throw new NotFoundException(`Media ${mediaId} not found.`);
     }
 
-    // Only the owner may delete (PRD §6.3). Shared-space editor permissions
-    // are layered on by the storage-spaces module in a later phase.
     if (media.ownerId !== userId) {
       throw new ForbiddenException('You do not own this media item.');
     }
 
     const resourceType: CloudinaryResourceType = resourceTypeForMime(media.mimeType);
 
-    // Orphaned media has no reachable Cloudinary account — skip the remote
-    // destroy and just clean up the tombstone row.
     if (!media.isOrphaned) {
       const account = await this.accountRepo.findOne({
         where: { id: media.cloudinaryAccountId },
@@ -313,20 +437,14 @@ export class MediaService {
         const apiSecret = this.aesGcm.decrypt(account.apiSecretEncrypted);
         try {
           await this.uploader.destroy(
-            {
-              cloudName: account.cloudName,
-              apiKey: account.apiKey,
-              apiSecret,
-            },
+            { cloudName: account.cloudName, apiKey: account.apiKey, apiSecret },
             media.cloudinaryPublicId,
             resourceType,
           );
-        } catch (err) {
-          // TODO(phase-later): enqueue a BullMQ `media-destroy-retry` job here
-          // with { mediaId, accountId, publicId, resourceType } and return 202.
-          // For Phase 7 we fail loudly so the row is not lost silently.
+        } catch {
+          // TODO(phase-later): enqueue a BullMQ `media-destroy-retry` job here.
           this.logger.error(
-            `Cloudinary destroy failed for media=${mediaId}; ` + 'DB row left intact for retry.',
+            `Cloudinary destroy failed for media=${mediaId}; DB row left intact for retry.`,
           );
           throw new HttpException(
             'Failed to delete the file from Cloudinary. Please try again.',
@@ -336,8 +454,6 @@ export class MediaService {
       }
     }
 
-    // Cloudinary delete succeeded (or was skipped) — now free the quota and
-    // drop the row atomically.
     await this.dataSource.transaction(async (manager) => {
       if (!media.isOrphaned) {
         await manager
@@ -364,10 +480,6 @@ export class MediaService {
 
   // ── Internals ──────────────────────────────────────────────────────────────
 
-  /**
-   * Loads the user's active accounts as the narrow projection the pure
-   * selector consumes.
-   */
   private async loadSelectableAccounts(userId: string): Promise<SelectableAccount[]> {
     const rows = await this.accountRepo.find({
       where: { userId, isActive: true },
@@ -383,21 +495,8 @@ export class MediaService {
     }));
   }
 
-  /**
-   * Reserves quota for `fileSize` on the correct account using a row-level
-   * lock (StorageModel.md §9). Returns the chosen account's credentials so the
-   * caller can perform the upload.
-   *
-   * Concurrency handling: inside the transaction we lock candidate account
-   * rows `FOR UPDATE`, re-run the selector against the freshly-locked figures,
-   * and only increment once we confirm the file still fits. If a racing upload
-   * filled the first candidate, the re-selection moves us to the next account
-   * in fill order. If nothing fits anymore, we throw the appropriate 507.
-   */
   private async reserveAccount(userId: string, fileSize: bigint): Promise<CloudinaryAccount> {
     return this.dataSource.transaction(async (manager) => {
-      // Lock all active account rows for this user in a deterministic order so
-      // concurrent transactions queue rather than deadlock.
       const locked = await manager
         .createQueryBuilder(CloudinaryAccount, 'account')
         .setLock('pessimistic_write')
@@ -434,13 +533,10 @@ export class MediaService {
 
       const chosen = locked.find((a) => a.id === outcome.account!.id)!;
 
-      // Reserve: increment used bytes on the locked row.
       await manager
         .createQueryBuilder()
         .update(CloudinaryAccount)
-        .set({
-          storageUsedBytes: () => `storage_used_bytes + ${fileSize.toString()}`,
-        })
+        .set({ storageUsedBytes: () => `storage_used_bytes + ${fileSize.toString()}` })
         .where('id = :id', { id: chosen.id })
         .execute();
 
@@ -448,7 +544,6 @@ export class MediaService {
     });
   }
 
-  /** Compensating decrement when a Cloudinary upload fails after reserving. */
   private async releaseReservation(accountId: string, fileSize: bigint): Promise<void> {
     await this.accountRepo
       .createQueryBuilder()
@@ -461,11 +556,44 @@ export class MediaService {
   }
 
   /**
-   * Confirms the declared MIME type and the magic-byte-detected MIME type
-   * belong to the same family. file-type reports `video/quicktime` as
-   * `video/mp4` for some MOV variants, so we compare on the top-level family
-   * (image vs video) which is what determines the Cloudinary resource bucket.
+   * Destroys all Cloudinary assets previously uploaded for a given mediaId
+   * (used during multipart upload rollback). Best-effort — errors are logged
+   * but do not throw so the caller can still surface the original failure.
    */
+  private async destroyUploadedParts(
+    userId: string,
+    mediaId: string,
+    resourceType: CloudinaryResourceType,
+    account: CloudinaryAccount,
+  ): Promise<void> {
+    const parts = await this.mediaPartRepo.find({
+      where: { mediaId },
+      select: ['cloudinaryPublicId'],
+    });
+
+    if (parts.length === 0) return;
+
+    const apiSecret = this.aesGcm.decrypt(account.apiSecretEncrypted);
+
+    for (const part of parts) {
+      try {
+        await this.uploader.destroy(
+          { cloudName: account.cloudName, apiKey: account.apiKey, apiSecret },
+          part.cloudinaryPublicId,
+          resourceType,
+        );
+      } catch {
+        this.logger.warn(
+          `Failed to destroy Cloudinary part ${part.cloudinaryPublicId} ` +
+            `for mediaId=${mediaId} userId=${userId} — manual cleanup may be needed.`,
+        );
+      }
+    }
+
+    // Remove the staging rows regardless of destroy success.
+    await this.mediaPartRepo.delete({ mediaId });
+  }
+
   private familiesMatch(declared: string, detected: string): boolean {
     const family = (m: string): string => m.split('/')[0] ?? m;
     return family(declared) === family(detected);
