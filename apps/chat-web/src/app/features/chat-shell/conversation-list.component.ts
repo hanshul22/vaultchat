@@ -1,14 +1,4 @@
-import {
-  Component,
-  EventEmitter,
-  inject,
-  Input,
-  OnChanges,
-  OnInit,
-  Output,
-  signal,
-  SimpleChanges,
-} from '@angular/core';
+import { Component, EventEmitter, inject, Input, OnInit, Output, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { Conversation } from '../../core/models/conversation.model';
 import { AuthService } from '../../core/services/auth.service';
@@ -31,7 +21,7 @@ import { AuthService } from '../../core/services/auth.service';
         <button
           class="conv-item"
           [class.conv-item--active]="conv.id === activeId"
-          (click)="select.emit(conv)"
+          (click)="selected.emit(conv)"
         >
           <div class="conv-item__avatar">
             <span class="conv-item__initials">{{ getInitials(conv) }}</span>
@@ -172,22 +162,18 @@ import { AuthService } from '../../core/services/auth.service';
     `,
   ],
 })
-export class ConversationListComponent implements OnInit, OnChanges {
+export class ConversationListComponent implements OnInit {
   private readonly authService = inject(AuthService);
 
   @Input() conversations: Conversation[] = [];
   @Input() activeId: string | null = null;
   @Input() presenceMap: Map<string, boolean> = new Map();
-  @Output() select = new EventEmitter<Conversation>();
+  @Output() selected = new EventEmitter<Conversation>();
 
   private currentUserId = signal<string | null>(null);
 
   ngOnInit(): void {
     this.currentUserId.set(this.authService.getCurrentUser()?.id ?? null);
-  }
-
-  ngOnChanges(_changes: SimpleChanges): void {
-    // Trigger re-render when inputs change.
   }
 
   getTitle(conv: Conversation): string {

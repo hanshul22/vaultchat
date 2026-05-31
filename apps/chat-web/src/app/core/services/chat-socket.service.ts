@@ -4,6 +4,7 @@ import { BehaviorSubject, Subject } from 'rxjs';
 import { AuthService } from './auth.service';
 import { Message } from '../models/message.model';
 import { PresenceStatus } from '../models/auth.model';
+import { environment } from '../../../environments/environment';
 
 export interface TypingEvent {
   conversationId: string;
@@ -48,11 +49,9 @@ export class ChatSocketService implements OnDestroy {
     const token = this.authService.getToken();
     if (!token) return;
 
-    this.socket = io('/chat', {
+    this.socket = io(`${environment.apiOrigin}/chat`, {
       auth: { token },
       transports: ['websocket'],
-      // Relative path works when the Angular dev server proxies to the API.
-      // In production, set the full API origin here via environment config.
     });
 
     this.socket.on('connect', () => {

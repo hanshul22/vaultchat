@@ -3,6 +3,7 @@ import { inject, Injectable } from '@angular/core';
 import { Router } from '@angular/router';
 import { Observable, tap } from 'rxjs';
 import { LoginResponse } from '../models/auth.model';
+import { environment } from '../../../environments/environment';
 
 const TOKEN_KEY = 'access_token';
 const USER_KEY = 'current_user';
@@ -13,12 +14,14 @@ export class AuthService {
   private readonly router = inject(Router);
 
   login(email: string, password: string): Observable<LoginResponse> {
-    return this.http.post<LoginResponse>('/api/v1/auth/login', { email, password }).pipe(
-      tap((res) => {
-        localStorage.setItem(TOKEN_KEY, res.accessToken);
-        localStorage.setItem(USER_KEY, JSON.stringify(res.user));
-      }),
-    );
+    return this.http
+      .post<LoginResponse>(`${environment.apiOrigin}/api/v1/auth/login`, { email, password })
+      .pipe(
+        tap((res) => {
+          localStorage.setItem(TOKEN_KEY, res.accessToken);
+          localStorage.setItem(USER_KEY, JSON.stringify(res.user));
+        }),
+      );
   }
 
   logout(): void {

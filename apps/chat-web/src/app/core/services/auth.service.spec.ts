@@ -4,6 +4,8 @@ import { provideHttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { AuthService } from './auth.service';
 
+const API_ORIGIN = 'http://localhost:3000';
+
 describe('AuthService', () => {
   let service: AuthService;
   let httpMock: HttpTestingController;
@@ -39,7 +41,7 @@ describe('AuthService', () => {
       expect(res.accessToken).toBe('jwt-token');
     });
 
-    const req = httpMock.expectOne('/api/v1/auth/login');
+    const req = httpMock.expectOne(`${API_ORIGIN}/api/v1/auth/login`);
     expect(req.request.method).toBe('POST');
     req.flush(mockResponse);
 

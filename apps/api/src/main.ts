@@ -8,6 +8,26 @@ import { AppModule } from './app/app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // ── CORS ──────────────────────────────────────────────────────────────────
+  // Allow the Angular dev servers (chat-web :4201, gallery-web :4202) to call
+  // the API. In production, replace with the real frontend origin(s) or read
+  // from an env variable.
+  const allowedOrigins = (
+    process.env['CORS_ORIGINS'] ??
+    'http://localhost:4201,http://localhost:4202,http://localhost:4200'
+  )
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  app.enableCors({
+    origin: allowedOrigins,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  });
+  // ─────────────────────────────────────────────────────────────────────────
+
   app.setGlobalPrefix('api/v1');
 
   app.useGlobalPipes(

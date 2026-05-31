@@ -3,8 +3,9 @@ import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { Conversation } from '../models/conversation.model';
 import { Message, MessageListResponse } from '../models/message.model';
+import { environment } from '../../../environments/environment';
 
-const BASE = '/api/v1/chat';
+const BASE = `${environment.apiOrigin}/api/v1/chat`;
 
 @Injectable({ providedIn: 'root' })
 export class ChatApiService {

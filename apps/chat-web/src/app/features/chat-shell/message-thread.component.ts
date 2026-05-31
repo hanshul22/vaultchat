@@ -5,7 +5,6 @@ import {
   inject,
   Input,
   OnChanges,
-  SimpleChanges,
   ViewChild,
 } from '@angular/core';
 import { DatePipe } from '@angular/common';
@@ -144,7 +143,7 @@ export class MessageThreadComponent implements OnChanges, AfterViewChecked {
 
   private shouldScroll = false;
 
-  ngOnChanges(_changes: SimpleChanges): void {
+  ngOnChanges(): void {
     this.shouldScroll = true;
   }
 

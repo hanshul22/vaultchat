@@ -33,7 +33,7 @@ import { MessageComposerComponent } from './message-composer.component';
           [conversations]="conversations()"
           [activeId]="activeConvId()"
           [presenceMap]="presenceMap()"
-          (select)="selectConversation($event)"
+          (selected)="selectConversation($event)"
         />
       </aside>
 
