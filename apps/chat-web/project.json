@@ -50,7 +50,8 @@
       "continuous": true,
       "executor": "@angular/build:dev-server",
       "options": {
-        "port": 4201
+        "port": 4201,
+        "proxyConfig": "apps/chat-web/src/proxy.conf.json"
       },
       "configurations": {
         "production": {
