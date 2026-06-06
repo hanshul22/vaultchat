@@ -10,7 +10,7 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   /**
-   * GET /api/v1/users/me
+   * GET /api/users/me
    *
    * Returns the authenticated user's profile including onboardingComplete,
    * which is true once the user has an active Primary Cloudinary account.

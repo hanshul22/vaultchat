@@ -12,6 +12,7 @@ import { CloudinaryAccount } from '../cloudinary-accounts/entities/cloudinary-ac
 import { Conversation } from '../conversations/entities/conversation.entity';
 import { ConversationMember } from '../conversations/entities/conversation-member.entity';
 import { Media } from '../media/entities/media.entity';
+import { MediaPart } from '../media/entities/media-part.entity';
 import { Message } from '../messages/entities/message.entity';
 import { MessageMedia } from '../messages/entities/message-media.entity';
 import { StorageMember } from '../storage-spaces/entities/storage-member.entity';
@@ -27,6 +28,7 @@ export const ALL_ENTITIES = [
   Conversation,
   ConversationMember,
   Media,
+  MediaPart,
   Message,
   MessageMedia,
   StorageMember,
@@ -35,9 +37,7 @@ export const ALL_ENTITIES = [
 ] as const;
 
 // ── Runtime config builder (Nest DI) ─────────────────────────────────────────
-export const buildTypeOrmConfig = (
-  configService: ConfigService,
-): TypeOrmModuleOptions => {
+export const buildTypeOrmConfig = (configService: ConfigService): TypeOrmModuleOptions => {
   const db = configService.get<DatabaseConfig>('database');
 
   if (!db) {

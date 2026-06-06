@@ -32,6 +32,7 @@
 
     "paths": {
       "@chat-media/shared": ["libs/shared/src/index.ts"],
+      "@chat-media/shared/auth": ["libs/shared/src/auth/index.ts"],
       "@chat-media/auth": ["libs/auth/src/index.ts"],
       "@chat-media/users": ["libs/users/src/index.ts"],
       "@chat-media/chat": ["libs/chat/src/index.ts"],

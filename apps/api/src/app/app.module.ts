@@ -15,7 +15,10 @@ import { AuthModule } from '../auth/auth.module';
 import { CloudinaryAccountsModule } from '../cloudinary-accounts/cloudinary-accounts.module';
 import { VaultModule } from '../vault/vault.module';
 import { UsersModule } from '../users/users.module';
+import { MediaModule } from '../media/media.module';
+import { AlbumsModule } from '../albums/albums.module';
 import { StorageSpacesModule } from '../storage-spaces/storage-spaces.module';
+import { ChatModule } from '../chat/chat.module';
 
 @Module({
   imports: [
@@ -38,7 +41,10 @@ import { StorageSpacesModule } from '../storage-spaces/storage-spaces.module';
     CloudinaryAccountsModule,
     VaultModule,
     UsersModule,
+    MediaModule,
+    AlbumsModule,
     StorageSpacesModule,
+    ChatModule,
     ThrottlerModule.forRoot([
       {
         name: 'short',
