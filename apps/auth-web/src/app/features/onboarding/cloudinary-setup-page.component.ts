@@ -18,6 +18,11 @@ import { AuthShellComponent } from '../../shared/auth-shell/auth-shell.component
       backLink="/onboarding/instructions"
       backLabel="Back to instructions"
     >
+
+      <p class="auth-page__placeholder">Credential fields will be added in the next step.</p>
+
+      <div class="auth-page__actions">
+        <button mat-flat-button color="primary" type="button" disabled>Save and continue</button>
       <p class="auth-page__placeholder">
         Credential fields will be added in the next step.
       </p>
@@ -26,6 +31,7 @@ import { AuthShellComponent } from '../../shared/auth-shell/auth-shell.component
         <button mat-flat-button color="primary" type="button" disabled>
           Save and continue
         </button>
+
         <a mat-button routerLink="/onboarding/instructions">Back to instructions</a>
       </div>
     </app-auth-shell>

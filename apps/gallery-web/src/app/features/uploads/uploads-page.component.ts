@@ -1319,4 +1319,7 @@ export class UploadsPageComponent {
   asProbeResult(v: unknown): VideoProbeResult | null {
     return v as VideoProbeResult | null;
   }
+
+}
+
 }

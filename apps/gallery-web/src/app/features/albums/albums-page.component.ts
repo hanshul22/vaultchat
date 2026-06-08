@@ -345,4 +345,8 @@ export class AlbumsPageComponent implements OnInit {
       },
     });
   }
+
 }
+
+}
+

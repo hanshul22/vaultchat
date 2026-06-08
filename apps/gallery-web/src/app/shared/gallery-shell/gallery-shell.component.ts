@@ -165,4 +165,8 @@ export class GalleryShellComponent {
       },
     });
   }
+
 }
+
+}
+
