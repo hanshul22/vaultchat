@@ -1029,9 +1029,17 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
       const videoEl = this.videoElRef?.nativeElement;
       if (!videoEl) return;
 
+
       this.playback.attach(videoEl, item.url, item.mimeType).catch(() => {
         this.playbackError.set(true);
       });
+
+      this.playback
+        .attach(videoEl, item.url, item.mimeType)
+        .catch(() => {
+          this.playbackError.set(true);
+        });
+
     }, 0);
   }
 
@@ -1065,4 +1073,8 @@ export class GalleryPageComponent implements OnInit, OnDestroy {
     const s = total % 60;
     return `${m}:${s.toString().padStart(2, '0')}`;
   }
+
 }
+
+}
+

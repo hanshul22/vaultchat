@@ -67,8 +67,7 @@ function makeMessage(id: string, conversationId: string, senderId: string): Mess
   } as unknown as Message;
 }
 
-// ── Mock factory ──────────────────────────────────────────────────────────────
-
+// ── Mock factory ─────────────────────────────────────────────────────────
 function mockRepo() {
   return {
     find: jest.fn(),
