@@ -1,21 +1,21 @@
 # VaultChat
 
-VaultChat is a privacy-first chat and media platform where users store photos and videos in their own Cloudinary accounts instead of platform-owned storage. It combines real-time messaging, media uploads, albums, and shared storage in one system.
+VaultChat is a privacy-focused chat and media platform that lets users keep their photos and videos in their own Cloudinary accounts. It brings together messaging, media uploads, albums, and shared storage in a single app.
 
 ## Features
 
-- Real-time 1:1 and group chat
+- Real-time personal and group chat
 - Photo and video uploads
-- User-owned Cloudinary storage
-- Albums and shared media spaces
-- Google OAuth and JWT auth
-- Large video support with browser-side processing
+- User-managed Cloudinary storage
+- Albums and shared spaces
+- Google OAuth and JWT-based authentication
+- Large video uploads with browser-side processing
 
 ## Tech Stack
 
 - Nx Monorepo
-- NestJS backend
-- Angular apps: `auth-web`, `chat-web`, `gallery-web`
+- NestJS
+- Angular (`auth-web`, `chat-web`, `gallery-web`)
 - PostgreSQL
 - Redis
 - Socket.io
@@ -24,10 +24,10 @@ VaultChat is a privacy-first chat and media platform where users store photos an
 
 ## How It Works
 
-- Users sign up and connect a Cloudinary account
-- Media is stored in the user's own Cloudinary account
-- Videos are compressed and split in the browser using `ffmpeg.wasm`
-- Chat and gallery features run on a single NestJS API
+- Users create an account and connect Cloudinary
+- Media is stored in the user’s own Cloudinary account
+- Videos are processed in the browser before upload
+- A single NestJS backend powers chat, auth, and gallery features
 
 ## Project Structure
 
@@ -53,4 +53,4 @@ libs/
 
 ## Goal
 
-Build a privacy-first platform for chat and media sharing where users keep ownership of their files.
+Create a private and scalable platform for messaging and media sharing while keeping file ownership with the user.
