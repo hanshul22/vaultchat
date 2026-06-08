@@ -20,6 +20,33 @@ import {
 const CORE_MT_BASE = 'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm';
 
 /**
+ * Maximum milliseconds the ffmpeg.exec() call is allowed to run before we
+ * abort and surface a "timed out" error.  90 s covers even large 4K files on
+ * a slow machine while still failing fast for stalled instances.
+ */
+export const FFMPEG_EXEC_TIMEOUT_MS = 90_000;
+
+/**
+ * Internal helper — exported only for unit-testing the timeout path.
+ * Creates a Promise that rejects after `ms` milliseconds with a descriptive
+ * timeout error message.
+ */
+export function createExecTimeoutPromise(ms: number, filename: string): Promise<never> {
+  return new Promise<never>((_, reject) =>
+    setTimeout(
+      () =>
+        reject(
+          new Error(
+            `ffmpeg timed out after ${ms / 1000}s while processing "${filename}". ` +
+              'The file may be too large or the encoder stalled.',
+          ),
+        ),
+      ms,
+    ),
+  );
+}
+
+/**
  * Manages the ffmpeg.wasm engine lifecycle and exposes the video-processing
  * contract for the upload pipeline.
  *
@@ -160,18 +187,24 @@ export class VideoProcessingService implements OnDestroy {
 
   /**
    * Processes a video file per the PRD pipeline:
-   *   - Probe the file to determine resolution.
-   *   - If height > 1080p: downscale to 1080p, preserve aspect ratio.
-   *   - Encode with H.264 (libx264), CRF 18.
-   *   - Return the processed File ready for the existing upload flow.
+   *   - Probe the file to determine resolution and codec.
+   *   - **Skip transcode** when the file is already H.264 and does not need
+   *     downscaling — return the original file immediately.
+   *   - Otherwise: H.264 (libx264) CRF 18, downscale to 1080p if needed.
+   *   - Hard timeout of {@link FFMPEG_EXEC_TIMEOUT_MS} ms on the exec call so
+   *     a stalled ffmpeg instance never leaves the queue stuck.
    *
    * Progress events are emitted through `progress$` during transcoding.
    *
    * @param request  Processing parameters (file, maxHeightPx, crf).
    * @returns        VideoProcessingResult with the output File and metadata.
-   * @throws         When ffmpeg is not loaded or transcoding fails.
+   * @throws         When ffmpeg is not loaded, times out, or transcoding fails.
    */
-  async processVideo(request: VideoProcessingRequest): Promise<VideoProcessingResult> {
+  async processVideo(
+    request: VideoProcessingRequest,
+    /** Override the exec timeout — for unit-testing only. */
+    execTimeoutMs = FFMPEG_EXEC_TIMEOUT_MS,
+  ): Promise<VideoProcessingResult> {
     if (!this.isReady || !this.ffmpegInstance) {
       throw new Error(
         'VideoProcessingService.processVideo: ffmpeg is not loaded. ' +
@@ -181,9 +214,36 @@ export class VideoProcessingService implements OnDestroy {
 
     const { file, maxHeightPx, crf } = request;
 
-    // Probe to determine whether downscaling is needed.
-    const probe = await this.probeVideo(file);
+    // Use the pre-computed probe from the queue item when available so we
+    // don't re-run a potentially slow/hanging ffprobe a second time.
+    // Fall back to probeVideo() only when no probe was supplied.
+    const probe = request.probe ?? (await this.probeVideo(file));
 
+    // ── Fast path: skip transcode when not needed ────────────────────────────
+    // A video is pass-through when:
+    //   1. It is already H.264 (h264 / avc1 / avc) AND does not need downscaling.
+    //   2. The codec is unknown (null) AND the file is an MP4 container AND
+    //      does not need downscaling — MP4 files are overwhelmingly H.264 in
+    //      practice (WhatsApp, iPhone, Android all produce H.264 MP4), and
+    //      running a full re-encode on an unknown-codec MP4 under 1080p is
+    //      far more likely to cause a hang than to improve compatibility.
+    //
+    // To force a transcode, the caller must explicitly pass a known non-H264 codec.
+    const isAlreadyH264 =
+      probe.codec === 'h264' || probe.codec === 'avc1' || probe.codec === 'avc';
+    const isMp4Container = file.type === 'video/mp4';
+    const isLikelyCompatible = isAlreadyH264 || (probe.codec === null && isMp4Container);
+
+    if (isLikelyCompatible && !probe.requiresDownscale) {
+      return {
+        outputFile: file,
+        wasTranscoded: false,
+        outputSizeBytes: file.size,
+        probe,
+      };
+    }
+
+    // ── Transcode path ───────────────────────────────────────────────────────
     const ffmpeg = this.ffmpegInstance as {
       writeFile: (path: string, data: Uint8Array) => Promise<unknown>;
       exec: (args: string[], timeout?: number) => Promise<number>;
@@ -227,7 +287,10 @@ export class VideoProcessingService implements OnDestroy {
         outputName,
       );
 
-      const exitCode = await ffmpeg.exec(args);
+      // Race the exec call against a hard timeout so a hung ffmpeg instance
+      // never leaves the queue stuck in "Compressing…" indefinitely.
+      const execPromise = ffmpeg.exec(args);
+      const exitCode = await Promise.race([execPromise, createExecTimeoutPromise(execTimeoutMs, file.name)]);
       if (exitCode !== 0) {
         throw new Error(`ffmpeg exited with code ${exitCode} while processing "${file.name}".`);
       }
@@ -260,6 +323,8 @@ export class VideoProcessingService implements OnDestroy {
         probe: outputProbeResult,
       };
     } finally {
+      // Always clean up virtual FS entries — even on timeout or error —
+      // so WASM memory is not leaked between processing attempts.
       await ffmpeg.deleteFile(inputName).catch(() => undefined);
       await ffmpeg.deleteFile(outputName).catch(() => undefined);
     }
@@ -412,6 +477,9 @@ export class VideoProcessingService implements OnDestroy {
    * Writes the file into the ffmpeg virtual FS, runs ffprobe with JSON output,
    * reads the result, then cleans up. Only called when ffmpeg is ready.
    *
+   * Has a hard 15 s timeout — ffprobe on a small file should be near-instant,
+   * so if it stalls we bail and return nulls rather than blocking the pipeline.
+   *
    * Returns null for both fields when ffprobe output cannot be parsed.
    */
   private async runFfprobe(file: File): Promise<{ codec: string | null; bitrate: number | null }> {
@@ -429,16 +497,23 @@ export class VideoProcessingService implements OnDestroy {
       const buffer = await file.arrayBuffer();
       await ffmpeg.writeFile(inputName, new Uint8Array(buffer));
 
-      await ffmpeg.ffprobe([
-        '-v',
-        'quiet',
-        '-print_format',
-        'json',
-        '-show_streams',
-        '-show_format',
-        inputName,
-        '-o',
-        outputName,
+      await Promise.race([
+        ffmpeg.ffprobe([
+          '-v',
+          'quiet',
+          '-print_format',
+          'json',
+          '-show_streams',
+          '-show_format',
+          inputName,
+          '-o',
+          outputName,
+        ]),
+        // 15 s hard cap — ffprobe on any reasonably-sized file should finish
+        // in under a second; if it stalls we return nulls and move on.
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('ffprobe timed out')), 15_000),
+        ),
       ]);
 
       const raw = await ffmpeg.readFile(outputName, 'utf8');

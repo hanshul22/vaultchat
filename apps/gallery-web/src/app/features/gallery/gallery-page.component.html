@@ -1,0 +1,289 @@
+
+    <div class="gallery-page">
+      <header class="gallery-page__header">
+        <h1 class="gallery-page__title">Gallery</h1>
+        @if (loadState() === 'loaded') {
+          <span class="gallery-page__count">
+            {{ meta()?.total ?? 0 }} item{{ (meta()?.total ?? 0) === 1 ? '' : 's' }}
+          </span>
+        }
+
+        @if (loadState() === 'loaded' && items().length > 0) {
+          @if (!selectionMode()) {
+            <button
+              type="button"
+              class="gallery-page__select-btn"
+              (click)="enterSelectionMode()"
+              aria-label="Enter selection mode"
+            >
+              Select
+            </button>
+          } @else {
+            <button
+              type="button"
+              class="gallery-page__select-btn gallery-page__select-btn--cancel"
+              (click)="exitSelectionMode()"
+              aria-label="Exit selection mode and clear selection"
+            >
+              Cancel
+            </button>
+          }
+        }
+      </header>
+
+      @if (selectionMode()) {
+        <div class="gallery-page__action-bar" role="toolbar" aria-label="Bulk actions">
+          <span class="gallery-page__selection-count" aria-live="polite" aria-atomic="true">
+            {{ selectedCount() }} selected
+          </span>
+
+          <button
+            type="button"
+            class="gallery-page__select-all-btn"
+            (click)="toggleSelectAll()"
+            [attr.aria-pressed]="allSelected()"
+          >
+            {{ allSelected() ? 'Deselect all' : 'Select all' }}
+          </button>
+
+          <button
+            type="button"
+            class="gallery-page__delete-btn"
+            [disabled]="selectedCount() === 0 || isDeleting()"
+            (click)="requestBulkDelete()"
+            aria-label="Delete selected items"
+          >
+            @if (isDeleting()) {
+              Deleting…
+            } @else {
+              Delete {{ selectedCount() > 0 ? '(' + selectedCount() + ')' : '' }}
+            }
+          </button>
+        </div>
+      }
+
+      @if (deleteFailures().length > 0) {
+        <div class="gallery-page__failure-banner" role="alert">
+          <strong>
+            {{ deleteFailures().length }} item{{ deleteFailures().length === 1 ? '' : 's' }} could
+            not be deleted.
+          </strong>
+          They remain in your gallery. Please try again or contact support if the problem persists.
+          <button
+            type="button"
+            class="gallery-page__failure-dismiss"
+            aria-label="Dismiss error"
+            (click)="dismissFailures()"
+          >
+            Dismiss
+          </button>
+        </div>
+      }
+
+      @if (loadState() === 'loading') {
+        <div class="gallery-page__loading" role="status" aria-live="polite">
+          <span class="gallery-page__spinner" aria-hidden="true"></span>
+          <span>Loading your media…</span>
+        </div>
+      }
+
+      @if (loadState() === 'error') {
+        <div class="gallery-page__error" role="alert">
+          <p>Could not load your media. Please try again.</p>
+          <button type="button" class="gallery-page__retry" (click)="load()">Retry</button>
+        </div>
+      }
+
+      @if (loadState() === 'loaded' && items().length === 0) {
+        <div class="gallery-page__empty">
+          <p class="gallery-page__empty-title">No media yet</p>
+          <p class="gallery-page__empty-hint">
+            Upload your first image or video using the Uploads tab.
+          </p>
+        </div>
+      }
+
+      @if (loadState() === 'loaded' && items().length > 0) {
+        <ul class="gallery-grid" aria-label="Media items" aria-multiselectable="true">
+          @for (item of items(); track item.id) {
+            <li
+              class="gallery-card"
+              [class.gallery-card--selected]="isSelected(item.id)"
+              [class.gallery-card--deleting]="isDeletingItem(item.id)"
+              [attr.aria-selected]="selectionMode() ? isSelected(item.id) : null"
+            >
+              @if (selectionMode()) {
+                <label
+                  class="gallery-card__select-label"
+                  [attr.aria-label]="
+                    'Select ' +
+                    item.mimeType +
+                    ' uploaded ' +
+                    (item.createdAt | date: 'dd MMM yyyy')
+                  "
+                >
+                  <input
+                    type="checkbox"
+                    class="gallery-card__checkbox"
+                    [checked]="isSelected(item.id)"
+                    [disabled]="isDeletingItem(item.id)"
+                    (change)="toggleItem(item.id)"
+                    (click)="$event.stopPropagation()"
+                  />
+                </label>
+              }
+
+              <div
+                class="gallery-card__thumb-wrap"
+                [class.gallery-card__thumb-wrap--video]="
+                  family(item) === 'video' && !selectionMode()
+                "
+                [class.gallery-card__thumb-wrap--selectable]="selectionMode()"
+                [attr.role]="
+                  selectionMode() ? 'checkbox' : family(item) === 'video' ? 'button' : null
+                "
+                [attr.tabindex]="selectionMode() || family(item) === 'video' ? '0' : null"
+                [attr.aria-checked]="selectionMode() ? isSelected(item.id) : null"
+                [attr.aria-label]="
+                  selectionMode() ? 'Select ' + item.mimeType : videoAriaLabel(item)
+                "
+                (click)="onCardClick(item)"
+                (keydown.enter)="onCardClick(item)"
+                (keydown.space)="$event.preventDefault(); onCardClick(item)"
+              >
+                <img
+                  class="gallery-card__thumb"
+                  [src]="item.thumbnailUrl"
+                  [alt]="item.mimeType"
+                  loading="lazy"
+                  decoding="async"
+                  width="400"
+                  height="400"
+                />
+
+                @if (isDeletingItem(item.id)) {
+                  <div class="gallery-card__deleting-overlay" aria-hidden="true">
+                    <span class="gallery-card__deleting-spinner"></span>
+                  </div>
+                }
+
+                @if (family(item) === 'video' && !selectionMode()) {
+                  <span class="gallery-card__play" aria-hidden="true">▶</span>
+                }
+
+                <span
+                  class="gallery-card__badge"
+                  [class.gallery-card__badge--video]="family(item) === 'video'"
+                >
+                  {{ family(item) === 'video' ? 'VIDEO' : 'IMAGE' }}
+                </span>
+              </div>
+
+              <div class="gallery-card__meta">
+                <span class="gallery-card__mime" title="{{ item.mimeType }}">
+                  {{ item.mimeType }}
+                </span>
+                <time class="gallery-card__date" [dateTime]="item.createdAt">
+                  {{ item.createdAt | date: 'dd MMM yyyy' }}
+                </time>
+                @if (item.durationSeconds) {
+                  <span class="gallery-card__duration">
+                    {{ formatDuration(item.durationSeconds) }}
+                  </span>
+                }
+              </div>
+            </li>
+          }
+        </ul>
+
+        @if (hasMorePages()) {
+          <p class="gallery-page__pagination-hint">
+            Showing page {{ meta()?.page }} of {{ meta()?.totalPages }} ({{ meta()?.total }} items
+            total). Full pagination will be added in the next phase.
+          </p>
+        }
+      }
+    </div>
+
+    @if (showConfirmDialog()) {
+      <div
+        class="confirm-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-desc"
+        (click)="cancelBulkDelete()"
+        (keydown.escape)="cancelBulkDelete()"
+      >
+        <div
+          class="confirm-dialog"
+          tabindex="-1"
+          (click)="$event.stopPropagation()"
+          (keydown)="$event.stopPropagation()"
+        >
+          <h2 id="confirm-title" class="confirm-dialog__title">
+            Delete {{ selectedCount() }} item{{ selectedCount() === 1 ? '' : 's' }}?
+          </h2>
+          <p id="confirm-desc" class="confirm-dialog__body">
+            This will permanently remove the selected media from your Vault. This action cannot be
+            undone.
+          </p>
+          <div class="confirm-dialog__actions">
+            <button
+              type="button"
+              class="confirm-dialog__cancel"
+              (click)="cancelBulkDelete()"
+              #cancelBtn
+            >
+              Cancel
+            </button>
+            <button type="button" class="confirm-dialog__confirm" (click)="confirmBulkDelete()">
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    }
+
+    @if (activeVideo()) {
+      <div
+        class="video-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Video player"
+        (click)="closePlayer()"
+        (keydown.escape)="closePlayer()"
+      >
+        <div class="video-overlay__inner">
+          <button
+            type="button"
+            class="video-overlay__close"
+            aria-label="Close video player"
+            (click)="closePlayer()"
+          >
+            ✕
+          </button>
+
+          <video
+            #videoEl
+            class="video-overlay__player"
+            controls
+            autoplay
+            playsinline
+            [attr.aria-label]="activeVideo()?.mimeType"
+          ></video>
+
+          @if (playbackError()) {
+            <p class="video-overlay__error" role="alert">
+              ⚠ Could not play this video. Try downloading it directly.
+            </p>
+          }
+
+          <p class="video-overlay__meta">
+            {{ activeVideo()?.mimeType }} ·
+            {{ formatDuration(activeVideoDuration()) }}
+          </p>
+        </div>
+      </div>
+    }
+  

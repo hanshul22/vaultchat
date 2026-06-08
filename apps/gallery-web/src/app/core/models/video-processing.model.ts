@@ -97,6 +97,12 @@ export interface VideoProcessingRequest {
    * larger file. Per PRD: 18.
    */
   crf: number;
+  /**
+   * Pre-computed probe result from the probe step.
+   * When provided, processVideo() uses this directly and skips an internal
+   * re-probe, avoiding a redundant (and potentially slow) ffprobe run.
+   */
+  probe?: VideoProbeResult | null;
 }
 
 /**

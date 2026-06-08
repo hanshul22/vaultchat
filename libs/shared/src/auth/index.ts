@@ -13,3 +13,4 @@ export type { SharedAuthService } from './auth-service.token';
 export { authTokenInterceptor } from './auth-token.interceptor';
 export { refreshRetryInterceptor, IS_RETRY } from './refresh-retry.interceptor';
 export { authGuard } from './auth.guard';
+export { AUTH_LOGIN_URL, isExternalLoginUrl } from './auth-login-url.token';

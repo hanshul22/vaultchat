@@ -1,0 +1,395 @@
+﻿    <div class="uploads-page">
+      <!-- ── Header ─────────────────────────────────────────────────────── -->
+      <header class="uploads-page__header">
+        <h1 class="uploads-page__title">Uploads</h1>
+        <p class="uploads-page__subtitle">
+          Select images or videos to add to your Vault. Each file is checked against your available
+          storage before uploading.
+        </p>
+      </header>
+
+      <!-- ── Drop zone ──────────────────────────────────────────────────── -->
+      <div
+        class="drop-zone"
+        [class.drop-zone--active]="isDragging()"
+        role="button"
+        tabindex="0"
+        aria-label="Drop files here or click to browse"
+        (click)="openFilePicker()"
+        (keydown.enter)="openFilePicker()"
+        (keydown.space)="openFilePicker()"
+        (dragover)="onDragOver($event)"
+        (dragleave)="onDragLeave()"
+        (drop)="onDrop($event)"
+      >
+        <span class="drop-zone__icon" aria-hidden="true">📂</span>
+        <p class="drop-zone__primary">
+          Drop images or videos here, or
+          <span class="drop-zone__browse">click to browse</span>
+        </p>
+        <p class="drop-zone__secondary">
+          Supported: JPEG, PNG, WebP, GIF, MP4, QuickTime · Max 100 MB per file
+        </p>
+      </div>
+
+      <!-- Hidden file input -->
+      <input
+        #fileInput
+        type="file"
+        [accept]="fileInputAccept"
+        multiple
+        class="uploads-page__file-input"
+        aria-hidden="true"
+        tabindex="-1"
+        (change)="onFileInputChange($event)"
+      />
+
+      <!-- ── ffmpeg status banner (shown only when video files are queued) ── -->
+      @if (hasVideoItems()) {
+        <div
+          class="ffmpeg-banner"
+          [attr.data-state]="ffmpegState()"
+          role="status"
+          aria-live="polite"
+        >
+          @switch (ffmpegState()) {
+            @case ('idle') {
+              <span class="ffmpeg-banner__icon">🎬</span>
+              <span>
+                Video processing engine (ffmpeg.wasm) will load automatically when a video is
+                queued.
+              </span>
+            }
+            @case ('loading') {
+              <span class="ffmpeg-banner__spinner" aria-hidden="true"></span>
+              <span>Loading video processing engine…</span>
+            }
+            @case ('ready') {
+              <span class="ffmpeg-banner__icon">✅</span>
+              <span>Video processing engine ready.</span>
+            }
+            @case ('failed') {
+              <span class="ffmpeg-banner__icon">⚠️</span>
+              <span>
+                Video processing engine unavailable — videos will be uploaded without compression.
+              </span>
+            }
+          }
+        </div>
+      }
+
+      <!-- ── Queue ───────────────────────────────────────────────────────── -->
+      @if (queue().length > 0) {
+        <section class="queue" aria-label="Upload queue">
+          <!-- Queue header + bulk actions -->
+          <div class="queue__header">
+            <h2 class="queue__title">
+              Queue
+              <span class="queue__badge">{{ queue().length }}</span>
+            </h2>
+
+            <div class="queue__actions">
+              @if (hasPendingItems()) {
+                <button
+                  type="button"
+                  class="btn btn--ghost"
+                  [disabled]="isBusy()"
+                  (click)="runPreflightAll()"
+                >
+                  @if (isCheckingAny()) {
+                    Checking…
+                  } @else {
+                    Check all
+                  }
+                </button>
+              }
+
+              @if (hasReadyItems()) {
+                <button
+                  type="button"
+                  class="btn btn--primary"
+                  [disabled]="isBusy()"
+                  (click)="uploadAll()"
+                >
+                  @if (isUploadingAny()) {
+                    Uploading…
+                  } @else {
+                    Upload {{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }}
+                  }
+                </button>
+              }
+
+              <button
+                type="button"
+                class="btn btn--ghost"
+                [disabled]="isBusy()"
+                (click)="clearQueue()"
+              >
+                Clear all
+              </button>
+            </div>
+          </div>
+
+          <!-- File list -->
+          <ul class="queue__list" aria-label="Files in queue">
+            @for (item of queue(); track item.clientId) {
+              <li class="queue-item" [attr.data-status]="item.status">
+                <!-- Status icon -->
+                <span class="queue-item__icon" aria-hidden="true">
+                  @switch (item.status) {
+                    @case ('probing') {
+                      <span class="queue-item__spinner queue-item__spinner--probe"></span>
+                    }
+                    @case ('checking') {
+                      <span class="queue-item__spinner"></span>
+                    }
+                    @case ('uploading') {
+                      <span class="queue-item__spinner queue-item__spinner--upload"></span>
+                    }
+                    @case ('processing') {
+                      <span class="queue-item__spinner queue-item__spinner--process"></span>
+                    }
+                    @case ('splitting') {
+                      <span class="queue-item__spinner queue-item__spinner--process"></span>
+                    }
+                    @case ('probed') {
+                      🎬
+                    }
+                    @case ('processed') {
+                      ✨
+                    }
+                    @case ('probeError') {
+                      ⚠️
+                    }
+                    @case ('processError') {
+                      ❌
+                    }
+                    @case ('ready') {
+                      ✅
+                    }
+                    @case ('uploaded') {
+                      🎉
+                    }
+                    @case ('uploadError') {
+                      ❌
+                    }
+                    @default {
+                      {{ mimeIcon(item.mimeType) }}
+                    }
+                  }
+                </span>
+
+                <!-- File info -->
+                <div class="queue-item__info">
+                  <p class="queue-item__name" [title]="item.filename">
+                    {{ item.filename }}
+                  </p>
+                  <p class="queue-item__meta">
+                    {{ formatBytes(item.sizeBytes) }} · {{ item.mimeType }}
+                  </p>
+
+                  @if (item.status === 'probing') {
+                    <p class="queue-item__status queue-item__status--info">Analysing video…</p>
+                  }
+
+                  @if (item.probeResult) {
+                    <p class="queue-item__status queue-item__status--probe">
+                      {{ item.probeResult.width }}×{{ item.probeResult.height }} ·
+                      {{ formatDuration(item.probeResult.durationSeconds) }}
+                      @if (item.probeResult.codec) {
+                        · {{ item.probeResult.codec }}
+                      }
+                      @if (item.probeResult.requiresDownscale) {
+                        ·
+                        <strong class="queue-item__downscale-warn">
+                          ⬇ will downscale to 1080p
+                        </strong>
+                      }
+                    </p>
+                  }
+
+                  @if (item.status === 'probeError' && item.probeErrorMessage) {
+                    <p class="queue-item__status queue-item__status--warn">
+                      ⚠ Probe failed: {{ item.probeErrorMessage }} — you can still upload.
+                    </p>
+                  }
+
+                  @if (item.status === 'checking') {
+                    <p class="queue-item__status queue-item__status--info">Checking vault…</p>
+                  }
+
+                  @if (item.status === 'processing') {
+                    <p class="queue-item__status queue-item__status--info">
+                      Compressing…
+                      @if (item.processingProgress && item.processingProgress.ratio > 0) {
+                        {{ item.processingProgress.ratio * 100 | number: '1.0-0' }}%
+                      }
+                    </p>
+                  }
+
+                  @if (item.status === 'processed' && item.processedFile) {
+                    <p class="queue-item__status queue-item__status--ok">
+                      ✨ Compressed — {{ formatBytes(item.processedFile.size) }}
+                      @if (item.probeResult) {
+                        (was {{ formatBytes(item.sizeBytes) }})
+                      }
+                    </p>
+                  }
+
+                  @if (item.status === 'processError' && item.processErrorMessage) {
+                    <p class="queue-item__status queue-item__status--err">
+                      Processing failed: {{ item.processErrorMessage }}
+                    </p>
+                  }
+
+                  @if (item.status === 'splitting') {
+                    <p class="queue-item__status queue-item__status--info">
+                      @if (item.totalChunks && item.totalChunks > 1) {
+                        Splitting into {{ item.totalChunks }} parts…
+                      } @else {
+                        Splitting file…
+                      }
+                    </p>
+                  }
+
+                  @if (item.status === 'uploading') {
+                    <p class="queue-item__status queue-item__status--info">
+                      @if (item.totalChunks && item.totalChunks > 1) {
+                        Uploading part
+                        {{ (item.currentChunkIndex ?? 0) + 1 }} of {{ item.totalChunks }}…
+                      } @else {
+                        Uploading to your Vault…
+                      }
+                    </p>
+                  }
+
+                  @if (item.status === 'ready' && item.preflightResult) {
+                    <p class="queue-item__status queue-item__status--ok">✓ Ready to upload</p>
+                  }
+
+                  @if (item.status === 'uploaded' && item.uploadedMedia) {
+                    <p class="queue-item__status queue-item__status--ok">✓ Uploaded successfully</p>
+                    <p class="queue-item__status queue-item__status--muted">
+                      ID: {{ item.uploadedMedia.id }} ·
+                      {{ item.uploadedMedia.createdAt | date: 'dd MMM yyyy, HH:mm' }}
+                    </p>
+                  }
+
+                  @if (item.status === 'uploadError' && item.errorMessage) {
+                    <p class="queue-item__status queue-item__status--err">
+                      {{ item.errorMessage }}
+                    </p>
+                  }
+                </div>
+
+                <!-- Per-item actions -->
+                <div class="queue-item__actions">
+                  @if (item.status === 'probed' && item.mimeType.startsWith('video/')) {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--primary"
+                      [disabled]="isBusy()"
+                      (click)="processOne(item.clientId)"
+                      [attr.aria-label]="'Process ' + item.filename"
+                    >
+                      Process
+                    </button>
+                  }
+
+                  @if (item.status === 'processError') {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--ghost"
+                      [disabled]="isBusy()"
+                      (click)="processOne(item.clientId)"
+                      [attr.aria-label]="'Retry processing ' + item.filename"
+                    >
+                      Retry
+                    </button>
+                  }
+
+                  @if (
+                    item.status === 'selected' ||
+                    item.status === 'probed' ||
+                    item.status === 'processed' ||
+                    item.status === 'probeError'
+                  ) {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--ghost"
+                      [disabled]="isBusy()"
+                      (click)="runPreflightOne(item.clientId)"
+                      [attr.aria-label]="'Check ' + item.filename"
+                    >
+                      Check
+                    </button>
+                  }
+
+                  @if (item.status === 'uploadError') {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--ghost"
+                      [disabled]="isBusy()"
+                      (click)="runPreflightOne(item.clientId)"
+                      [attr.aria-label]="'Retry check for ' + item.filename"
+                    >
+                      Re-check
+                    </button>
+                  }
+
+                  @if (item.status === 'ready') {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--primary"
+                      [disabled]="isBusy()"
+                      (click)="uploadOne(item.clientId)"
+                      [attr.aria-label]="'Upload ' + item.filename"
+                    >
+                      Upload
+                    </button>
+                  }
+
+                  @if (
+                    item.status !== 'probing' &&
+                    item.status !== 'processing' &&
+                    item.status !== 'splitting' &&
+                    item.status !== 'uploading' &&
+                    item.status !== 'checking'
+                  ) {
+                    <button
+                      type="button"
+                      class="btn btn--sm btn--danger-ghost"
+                      (click)="removeItem(item.clientId)"
+                      [attr.aria-label]="'Remove ' + item.filename"
+                    >
+                      Remove
+                    </button>
+                  }
+                </div>
+              </li>
+            }
+          </ul>
+
+          @if (uploadedCount() > 0) {
+            <div class="queue__notice queue__notice--success" role="status">
+              🎉
+              <strong>
+                {{ uploadedCount() }} file{{ uploadedCount() === 1 ? '' : 's' }} uploaded
+              </strong>
+              to your Vault. Visit the
+              <a routerLink="/gallery" class="queue__notice-link">Gallery</a>
+              to see them.
+            </div>
+          }
+
+          @if (hasReadyItems() && !isUploadingAny()) {
+            <div class="queue__notice" role="note">
+              <strong>
+                {{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready to upload.
+              </strong>
+              Videos have been processed and checked. Click "Upload all" to send them to your Vault.
+            </div>
+          }
+        </section>
+      }
+    </div>

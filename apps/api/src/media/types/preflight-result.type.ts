@@ -27,6 +27,8 @@ export interface PreflightResult {
   canUpload: boolean;
 
   // ── Present only when canUpload === true ──────────────────────────────────
+  cloudName?: string;
+  uploadFolder?: string;
   targetAccountId?: string;
   targetAccountRole?: CloudinaryAccountRole;
   targetSecondaryOrder?: number | null;

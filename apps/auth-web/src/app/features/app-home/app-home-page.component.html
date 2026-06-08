@@ -1,0 +1,15 @@
+
+    <div class="app-home">
+      <p class="app-home__badge">⚠ TEMPORARY — PHASE 6 PLACEHOLDER</p>
+      <h1 class="app-home__title">VaultChat App Home</h1>
+      <p class="app-home__subtitle">Temporary post-login landing page for onboarded users.</p>
+      <p class="app-home__note">
+        This page is a placeholder used to verify the end-to-end auth flow while cross-app routing
+        to <strong>chat-web</strong> and <strong>gallery-web</strong>
+        is not yet wired. It will be replaced once the real post-login destination is available.
+      </p>
+      <button mat-flat-button color="warn" [disabled]="isLoggingOut()" (click)="logout()">
+        {{ isLoggingOut() ? 'Logging out…' : 'Logout' }}
+      </button>
+    </div>
+  

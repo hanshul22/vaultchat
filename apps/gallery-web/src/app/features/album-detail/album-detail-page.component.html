@@ -1,0 +1,116 @@
+
+    <div class="album-detail">
+      <!-- ── Back link ──────────────────────────────────────────────────── -->
+      <a routerLink="/albums" class="album-detail__back"> ← Back to Albums </a>
+
+      <!-- ── Loading ────────────────────────────────────────────────────── -->
+      @if (loadState() === 'loading') {
+        <div class="album-detail__loading" role="status" aria-live="polite">
+          <span class="album-detail__spinner" aria-hidden="true"></span>
+          <span>Loading album…</span>
+        </div>
+      }
+
+      <!-- ── Not found ──────────────────────────────────────────────────── -->
+      @if (loadState() === 'not-found') {
+        <div class="album-detail__not-found" role="alert">
+          <p class="album-detail__not-found-title">Album not found</p>
+          <p class="album-detail__not-found-hint">
+            This album does not exist or you do not have access to it.
+          </p>
+          <a routerLink="/albums" class="album-detail__back-btn"> Back to Albums </a>
+        </div>
+      }
+
+      <!-- ── Error ──────────────────────────────────────────────────────── -->
+      @if (loadState() === 'error') {
+        <div class="album-detail__error" role="alert">
+          <p>Could not load this album. Please try again.</p>
+          <button type="button" class="album-detail__retry" (click)="load()">Retry</button>
+        </div>
+      }
+
+      <!-- ── Loaded ─────────────────────────────────────────────────────── -->
+      @if (loadState() === 'loaded' && album()) {
+        <!-- Album metadata -->
+        <header class="album-detail__header">
+          <h1 class="album-detail__name">{{ album()!.name }}</h1>
+
+          @if (album()!.description) {
+            <p class="album-detail__description">{{ album()!.description }}</p>
+          }
+
+          <dl class="album-detail__meta">
+            <div class="album-detail__meta-row">
+              <dt>Items</dt>
+              <dd>{{ album()!.mediaCount }}</dd>
+            </div>
+            <div class="album-detail__meta-row">
+              <dt>Created</dt>
+              <dd>
+                <time [dateTime]="album()!.createdAt">
+                  {{ album()!.createdAt | date: 'dd MMM yyyy, HH:mm' }}
+                </time>
+              </dd>
+            </div>
+            <div class="album-detail__meta-row">
+              <dt>Updated</dt>
+              <dd>
+                <time [dateTime]="album()!.updatedAt">
+                  {{ album()!.updatedAt | date: 'dd MMM yyyy, HH:mm' }}
+                </time>
+              </dd>
+            </div>
+          </dl>
+        </header>
+
+        <hr class="album-detail__divider" />
+
+        <!-- Media membership section -->
+        <section class="album-detail__members" aria-labelledby="members-heading">
+          <h2 id="members-heading" class="album-detail__members-title">
+            Media
+            <span class="album-detail__members-count">
+              {{ album()!.media.length }}
+            </span>
+          </h2>
+
+          <!-- Empty members state -->
+          @if (album()!.media.length === 0) {
+            <div class="album-detail__members-empty">
+              <p class="album-detail__members-empty-title">No media in this album yet</p>
+              <p class="album-detail__members-empty-hint">
+                Add media items to this album from the Gallery.
+              </p>
+            </div>
+          }
+
+          <!-- Members list -->
+          @if (album()!.media.length > 0) {
+            <ul class="album-detail__members-list" aria-label="Album media members">
+              @for (member of album()!.media; track member.mediaId) {
+                <li class="album-detail__member-row">
+                  <!-- Placeholder icon — full thumbnail resolved in next phase -->
+                  <span class="album-detail__member-icon" aria-hidden="true">🖼</span>
+
+                  <div class="album-detail__member-info">
+                    <code class="album-detail__member-id" title="Media ID">
+                      {{ member.mediaId }}
+                    </code>
+                    <time class="album-detail__member-date" [dateTime]="member.addedAt">
+                      Added {{ member.addedAt | date: 'dd MMM yyyy' }}
+                    </time>
+                  </div>
+                </li>
+              }
+            </ul>
+
+            <p class="album-detail__members-note">
+              Full media thumbnails will be shown once the media detail resolver is wired up in the
+              next phase.
+            </p>
+          }
+        </section>
+      }
+    </div>
+  

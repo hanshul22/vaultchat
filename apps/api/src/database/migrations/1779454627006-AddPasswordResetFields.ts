@@ -5,10 +5,10 @@ export class AddPasswordResetFields1779454627006 implements MigrationInterface {
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(
-      `ALTER TABLE "users" ADD "password_reset_token_hash" character varying(255)`,
+      `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "password_reset_token_hash" character varying(255)`,
     );
     await queryRunner.query(
-      `ALTER TABLE "users" ADD "password_reset_token_expires_at" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "password_reset_token_expires_at" TIMESTAMP WITH TIME ZONE`,
     );
     await queryRunner.query(`ALTER TABLE "users" ALTER COLUMN "password_hash" DROP NOT NULL`);
   }

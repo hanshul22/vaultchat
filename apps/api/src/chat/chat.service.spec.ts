@@ -69,7 +69,6 @@ function makeMessage(id: string, conversationId: string, senderId: string): Mess
 
 // ── Mock factory ──────────────────────────────────────────────────────────────
 
- 
 function mockRepo() {
   return {
     find: jest.fn(),

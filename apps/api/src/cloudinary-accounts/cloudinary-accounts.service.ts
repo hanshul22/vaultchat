@@ -21,6 +21,23 @@ import { CloudinaryAccountResponseDto } from './dto/cloudinary-account-response.
 /** 25 GiB in bytes */
 const DEFAULT_STORAGE_LIMIT_BYTES = BigInt(25) * BigInt(1024 ** 3);
 
+export interface CloudinaryAccountReconciliationRow {
+  id: string;
+  cloudName: string;
+  apiKey: string;
+  apiSecretEncrypted: string;
+  storageUsedBytes: string;
+  isActive: boolean;
+}
+
+export interface CloudinaryAccountReconciliationResult {
+  accountId: string;
+  previousStorageUsedBytes: string;
+  actualStorageUsedBytes: string;
+  corrected: boolean;
+  lastReconciledAt: Date;
+}
+
 @Injectable()
 export class CloudinaryAccountsService {
   private readonly logger = new Logger(CloudinaryAccountsService.name);
@@ -277,6 +294,72 @@ export class CloudinaryAccountsService {
         orphanedMediaCount > 0
           ? `Account deactivated. ${orphanedMediaCount} media item(s) marked as orphaned.`
           : 'Account deactivated.',
+    };
+  }
+
+  async listActiveAccountsForReconciliation(
+    offset: number,
+    limit: number,
+  ): Promise<CloudinaryAccountReconciliationRow[]> {
+    return this.repo.find({
+      where: { isActive: true },
+      select: [
+        'id',
+        'cloudName',
+        'apiKey',
+        'apiSecretEncrypted',
+        'storageUsedBytes',
+        'isActive',
+      ],
+      order: {
+        createdAt: 'ASC',
+        id: 'ASC',
+      },
+      skip: offset,
+      take: limit,
+    });
+  }
+
+  buildAdminApiCredentials(
+    account: Pick<
+      CloudinaryAccountReconciliationRow,
+      'cloudName' | 'apiKey' | 'apiSecretEncrypted'
+    >,
+  ) {
+    return {
+      cloudName: account.cloudName,
+      apiKey: account.apiKey,
+      apiSecret: this.aesGcm.decrypt(account.apiSecretEncrypted),
+    };
+  }
+
+  async applyStorageReconciliation(
+    accountId: string,
+    actualStorageUsedBytes: string,
+    reconciledAt: Date,
+  ): Promise<CloudinaryAccountReconciliationResult | null> {
+    const account = await this.repo.findOne({
+      where: { id: accountId, isActive: true },
+      select: ['id', 'storageUsedBytes', 'lastReconciledAt', 'isActive'],
+    });
+
+    if (!account) {
+      return null;
+    }
+
+    const previousStorageUsedBytes = account.storageUsedBytes;
+    const corrected = previousStorageUsedBytes !== actualStorageUsedBytes;
+
+    account.storageUsedBytes = actualStorageUsedBytes;
+    account.lastReconciledAt = reconciledAt;
+    await this.repo.save(account);
+
+    return {
+      accountId: account.id,
+      previousStorageUsedBytes,
+      actualStorageUsedBytes,
+      corrected,
+      lastReconciledAt: reconciledAt,
     };
   }
 

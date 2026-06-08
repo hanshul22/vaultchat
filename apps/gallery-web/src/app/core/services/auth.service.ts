@@ -1,7 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { map, tap } from 'rxjs/operators';
+import { finalize, map, shareReplay, tap } from 'rxjs/operators';
 
 import { API_BASE_URL } from '../tokens/api-base-url.token';
 import { AuthState } from '../models/auth-state.model';
@@ -44,13 +44,35 @@ export class AuthService {
   }
 
   /**
+   * Holds the in-flight refresh request, if any, so that concurrent callers
+   * (multiple 401s arriving at once) share a single POST /auth/refresh instead
+   * of each firing their own and tripping the server rate limiter (429).
+   */
+  private refresh$: Observable<AuthResponse> | null = null;
+
+  /**
    * Calls POST /auth/refresh with the HttpOnly cookie and stores the new
    * access token in memory. Used by the shared guard and retry interceptor.
+   *
+   * Single-flight: while a refresh is in progress, all callers receive the
+   * same shared observable rather than issuing duplicate requests.
    */
   refresh(): Observable<AuthResponse> {
-    return this.http
+    if (this.refresh$) {
+      return this.refresh$;
+    }
+
+    this.refresh$ = this.http
       .post<AuthResponse>(`${this.apiBaseUrl}/auth/refresh`, {}, { withCredentials: true })
-      .pipe(tap((response) => this.setAuthState(response)));
+      .pipe(
+        tap((response) => this.setAuthState(response)),
+        finalize(() => {
+          this.refresh$ = null;
+        }),
+        shareReplay({ bufferSize: 1, refCount: false }),
+      );
+
+    return this.refresh$;
   }
 
   /**

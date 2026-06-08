@@ -114,6 +114,14 @@ describe('CloudinaryAccountSelector (StorageModel.md §11 worked examples)', () 
 
       expect(outcome.account?.id).toBe('secondary-1');
     });
+
+    it('prefers Secondary-1 over Secondary-2 when both can fit', () => {
+      const accounts = [primary(25), secondary(2, 0), secondary(1, 0)];
+
+      const outcome = selectAccountForUpload(accounts, 1n * GiB);
+
+      expect(outcome.account?.id).toBe('secondary-1');
+    });
   });
 
   describe('edge cases', () => {
