@@ -1,0 +1,45 @@
+
+    <div class="gallery-shell">
+      <header class="gallery-shell__header">
+        <span class="gallery-shell__brand">VaultChat Gallery</span>
+
+        <nav class="gallery-shell__nav" aria-label="Main navigation">
+          <a
+            routerLink="/gallery"
+            routerLinkActive="gallery-shell__nav-link--active"
+            class="gallery-shell__nav-link"
+            >Gallery</a
+          >
+          <a
+            routerLink="/albums"
+            routerLinkActive="gallery-shell__nav-link--active"
+            class="gallery-shell__nav-link"
+            >Albums</a
+          >
+          <a
+            routerLink="/uploads"
+            routerLinkActive="gallery-shell__nav-link--active"
+            class="gallery-shell__nav-link"
+            >Uploads</a
+          >
+          <a
+            routerLink="/shared-spaces"
+            routerLinkActive="gallery-shell__nav-link--active"
+            class="gallery-shell__nav-link"
+            >Shared Spaces</a
+          >
+        </nav>
+
+        @if (user$ | async; as user) {
+          <div class="gallery-shell__user">
+            <span class="gallery-shell__user-name">{{ user.fullName }}</span>
+            <button type="button" class="gallery-shell__logout" (click)="logout()">Sign out</button>
+          </div>
+        }
+      </header>
+
+      <main class="gallery-shell__content">
+        <router-outlet />
+      </main>
+    </div>
+  

@@ -1,0 +1,167 @@
+
+    <div class="page">
+      @if (loading) {
+        <p class="status">Loading…</p>
+      }
+      @if (error403) {
+        <div class="error-block" role="alert">
+          <strong>Access denied.</strong> You don't have permission to view this space.
+        </div>
+      }
+      @if (error404) {
+        <div class="error-block" role="alert">
+          <strong>Not found.</strong> This shared space doesn't exist.
+        </div>
+      }
+      @if (loadError && !error403 && !error404) {
+        <div class="error-block" role="alert">{{ loadError }}</div>
+      }
+
+      @if (space) {
+        <div class="page-header">
+          <h1 class="page-title">{{ space.name }}</h1>
+          <span class="role-badge role-{{ space.myRole }}">{{ space.myRole }}</span>
+        </div>
+
+        <div class="meta-row">
+          <span
+            >Owner: <strong>{{ space.owner.fullName }}</strong> ({{ space.owner.email }})</span
+          >
+          <span>{{ space.mediaCount }} media item{{ space.mediaCount !== 1 ? 's' : '' }}</span>
+        </div>
+
+        @if (space.myRole === 'owner') {
+          <section class="section" aria-label="Rename space">
+            <h2 class="section-title">Rename Space</h2>
+            <form (ngSubmit)="renameSpace()" class="inline-form">
+              <input
+                type="text"
+                [(ngModel)]="renameValue"
+                name="renameValue"
+                class="input"
+                aria-label="New space name"
+                required
+              />
+              <button
+                type="submit"
+                class="btn btn-primary"
+                [disabled]="!renameValue.trim() || renaming"
+              >
+                {{ renaming ? 'Saving…' : 'Rename' }}
+              </button>
+            </form>
+            @if (renameError) {
+              <p class="error" role="alert">{{ renameError }}</p>
+            }
+          </section>
+        }
+
+        <section class="section" aria-label="Members">
+          <h2 class="section-title">Members</h2>
+
+          @if (space.members.length > 0) {
+            <ul class="member-list" role="list">
+              @for (member of space.members; track member.userId) {
+                <li class="member-row">
+                  <span class="member-name">{{ member.user?.fullName ?? member.userId }}</span>
+                  <span class="member-email">{{ member.user?.email ?? '' }}</span>
+                  <span class="role-badge role-{{ member.role }}">{{ member.role }}</span>
+                  @if (space.myRole === 'owner') {
+                    <select
+                      [ngModel]="member.role"
+                      (ngModelChange)="changeMemberRole(member, $event)"
+                      name="role-{{ member.userId }}"
+                      class="select"
+                      [attr.aria-label]="
+                        'Change role for ' + (member.user?.fullName ?? member.userId)
+                      "
+                    >
+                      <option value="editor">editor</option>
+                      <option value="viewer">viewer</option>
+                    </select>
+                    <button
+                      class="btn btn-danger"
+                      (click)="removeMember(member)"
+                      [disabled]="removingMember === member.userId"
+                      [attr.aria-label]="'Remove ' + (member.user?.fullName ?? member.userId)"
+                    >
+                      {{ removingMember === member.userId ? 'Removing…' : 'Remove' }}
+                    </button>
+                  }
+                </li>
+              }
+            </ul>
+          } @else {
+            <p class="empty">No members yet.</p>
+          }
+
+          @if (memberActionError) {
+            <p class="error" role="alert">{{ memberActionError }}</p>
+          }
+
+          @if (space.myRole === 'owner') {
+            <form (ngSubmit)="addMember()" class="inline-form add-member-form">
+              <input
+                type="text"
+                [(ngModel)]="addMemberUserId"
+                name="addMemberUserId"
+                placeholder="User ID"
+                class="input"
+                aria-label="User ID to add"
+                required
+              />
+              <select
+                [(ngModel)]="addMemberRole"
+                name="addMemberRole"
+                class="select"
+                aria-label="Role"
+              >
+                <option value="editor">editor</option>
+                <option value="viewer">viewer</option>
+              </select>
+              <button
+                type="submit"
+                class="btn btn-primary"
+                [disabled]="!addMemberUserId.trim() || addingMember"
+              >
+                {{ addingMember ? 'Adding…' : 'Add Member' }}
+              </button>
+            </form>
+            @if (addMemberError) {
+              <p class="error" role="alert">{{ addMemberError }}</p>
+            }
+          }
+        </section>
+
+        @if (space.myRole === 'owner' || space.myRole === 'editor') {
+          <section class="section" aria-label="Assign media">
+            <h2 class="section-title">Assign Media</h2>
+            <p class="hint">Enter comma-separated media IDs to assign them to this space.</p>
+            <form (ngSubmit)="assignMedia()" class="inline-form">
+              <textarea
+                [(ngModel)]="mediaIdsInput"
+                name="mediaIdsInput"
+                class="textarea"
+                rows="3"
+                placeholder="id1, id2, id3"
+                aria-label="Media IDs to assign"
+              ></textarea>
+              <button
+                type="submit"
+                class="btn btn-primary"
+                [disabled]="!mediaIdsInput.trim() || assigning"
+              >
+                {{ assigning ? 'Assigning…' : 'Assign' }}
+              </button>
+            </form>
+            @if (assignSuccess) {
+              <p class="success" role="status">{{ assignSuccess }}</p>
+            }
+            @if (assignError) {
+              <p class="error" role="alert">{{ assignError }}</p>
+            }
+          </section>
+        }
+      }
+    </div>
+  

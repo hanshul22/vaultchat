@@ -15,6 +15,13 @@ import { CloudinaryAccount } from '../../cloudinary-accounts/entities/cloudinary
 import { MessageMedia } from '../../messages/entities/message-media.entity';
 import { StorageSpace } from '../../storage-spaces/entities/storage-space.entity';
 import { User } from '../../users/entities/user.entity';
+import { MediaPart } from './media-part.entity';
+
+export enum MediaUploadStatus {
+  UPLOADING = 'uploading',
+  READY = 'ready',
+  FAILED = 'failed',
+}
 
 // Composite index for gallery listing (PRD §10):
 //   "media (owner_id, created_at DESC)"
@@ -112,6 +119,18 @@ export class Media {
   @Column({ name: 'is_multipart', type: 'boolean', default: false })
   isMultipart!: boolean;
 
+  @Column({ name: 'total_parts', type: 'integer', default: 1 })
+  totalParts!: number;
+
+  @Column({
+    name: 'upload_status',
+    type: 'enum',
+    enum: MediaUploadStatus,
+    enumName: 'media_upload_status',
+    default: MediaUploadStatus.READY,
+  })
+  uploadStatus!: MediaUploadStatus;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 
@@ -126,4 +145,7 @@ export class Media {
 
   @OneToMany(() => MessageMedia, (messageMedia) => messageMedia.media)
   messageMedia!: MessageMedia[];
+
+  @OneToMany(() => MediaPart, (mediaPart) => mediaPart.media)
+  mediaParts!: MediaPart[];
 }

@@ -9,21 +9,24 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
-  UploadedFile as UploadedFileParam,
   UseGuards,
-  UseInterceptors,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 
 import { JwtAccessGuard, JwtPayload } from '../auth/guards/jwt-access.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { MediaService, UploadedFile } from './media.service';
-import { UploadPreflightDto, MAX_UPLOAD_SIZE_BYTES } from './dto/upload-preflight.dto';
-import { MediaUploadDto } from './dto/media-upload.dto';
+import { MediaService } from './media.service';
+import { UploadPreflightDto } from './dto/upload-preflight.dto';
 import { MediaListQueryDto } from './dto/media-list-query.dto';
-import { MediaListResponseDto, MediaResponseDto } from './dto/media-response.dto';
+import { MediaListResponseDto } from './dto/media-response.dto';
+import { DirectUploadAbortDto } from './dto/direct-upload-abort.dto';
+import { DirectUploadCompleteDto } from './dto/direct-upload-complete.dto';
+import { DirectUploadInitDto } from './dto/direct-upload-init.dto';
+import { DirectUploadSignPartDto } from './dto/direct-upload-sign-part.dto';
+import { DirectUploadCompleteResponse } from './types/direct-upload-complete-response.type';
+import { DirectUploadInitResponse } from './types/direct-upload-init-response.type';
+import { DirectUploadSignPartResponse } from './types/direct-upload-sign-part-response.type';
 import { PreflightResult } from './types/preflight-result.type';
 
 @Controller('media')
@@ -36,6 +39,7 @@ export class MediaController {
    *
    * Deterministic, quota-free check the UI runs before a large upload.
    * Returns the target account on success, or a 507-style reason on failure.
+   * Binary uploads now go browser → Cloudinary directly; see direct-upload-init.
    */
   @Post('upload/preflight')
   @HttpCode(HttpStatus.OK)
@@ -47,33 +51,44 @@ export class MediaController {
     return this.mediaService.preflight(user.sub, dto.fileSizeBytes, dto.mimeType);
   }
 
-  /**
-   * POST /api/media/upload (multipart/form-data)
-   *
-   * The binary arrives as the `file` part; optional metadata (e.g.
-   * storageSpaceId) arrives as additional form fields. Multer keeps the file
-   * in memory so we can run a magic-byte check and stream it to Cloudinary.
-   */
-  @Post('upload')
+  @Post('direct-upload-init')
   @HttpCode(HttpStatus.CREATED)
-  @UseInterceptors(
-    FileInterceptor('file', {
-      limits: { fileSize: MAX_UPLOAD_SIZE_BYTES, files: 1 },
-    }),
-  )
-  async upload(
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async directUploadInit(
     @CurrentUser() user: JwtPayload,
-    @UploadedFileParam() file: UploadedFile,
-    @Body(new ValidationPipe({ transform: true, whitelist: true }))
-    body: MediaUploadDto,
-  ): Promise<MediaResponseDto> {
-    return this.mediaService.upload(user.sub, file, {
-      storageSpaceId: body.storageSpaceId ?? null,
-      mediaId: body.mediaId,
-      partIndex: body.partIndex,
-      totalParts: body.totalParts,
-      totalFileSize: body.totalFileSize,
-    });
+    @Body() dto: DirectUploadInitDto,
+  ): Promise<DirectUploadInitResponse> {
+    return this.mediaService.directUploadInit(user.sub, dto);
+  }
+
+  @Post('direct-upload-sign-part')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async directUploadSignPart(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: DirectUploadSignPartDto,
+  ): Promise<DirectUploadSignPartResponse> {
+    return this.mediaService.directUploadSignPart(user.sub, dto);
+  }
+
+  @Post('direct-upload-complete')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async directUploadComplete(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: DirectUploadCompleteDto,
+  ): Promise<DirectUploadCompleteResponse> {
+    return this.mediaService.directUploadComplete(user.sub, dto);
+  }
+
+  @Post('direct-upload-abort')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
+  async directUploadAbort(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: DirectUploadAbortDto,
+  ): Promise<{ success: true }> {
+    return this.mediaService.directUploadAbort(user.sub, dto);
   }
 
   /**

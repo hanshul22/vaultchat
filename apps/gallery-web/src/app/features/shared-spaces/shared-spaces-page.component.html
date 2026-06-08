@@ -1,0 +1,60 @@
+
+    <div class="page">
+      <h1 class="page-title">Shared Spaces</h1>
+
+      <section class="create-section" aria-label="Create a new shared space">
+        <form (ngSubmit)="createSpace()" class="create-form">
+          <input
+            type="text"
+            [(ngModel)]="newSpaceName"
+            name="newSpaceName"
+            placeholder="New space name"
+            class="input"
+            aria-label="New space name"
+            required
+          />
+          <button
+            type="submit"
+            class="btn btn-primary"
+            [disabled]="!newSpaceName.trim() || creating"
+          >
+            {{ creating ? 'Creating…' : 'Create Space' }}
+          </button>
+        </form>
+        @if (createError) {
+          <p class="error" role="alert">{{ createError }}</p>
+        }
+      </section>
+
+      <section aria-label="Your shared spaces">
+        @if (loading) {
+          <p class="status">Loading…</p>
+        }
+        @if (loadError) {
+          <p class="error" role="alert">{{ loadError }}</p>
+        }
+        @if (!loading && !loadError && spaces.length === 0) {
+          <p class="empty">No shared spaces yet. Create one above to get started.</p>
+        }
+        @if (spaces.length > 0) {
+          <ul class="space-list" role="list">
+            @for (space of spaces; track space.id) {
+              <li class="space-card">
+                <div class="space-info">
+                  <span class="space-name">{{ space.name }}</span>
+                  <span class="role-badge role-{{ space.myRole }}">{{ space.myRole }}</span>
+                </div>
+                <div class="space-meta">
+                  <span
+                    >{{ space.memberCount }} member{{ space.memberCount !== 1 ? 's' : '' }}</span
+                  >
+                  <span>{{ space.mediaCount }} media</span>
+                </div>
+                <a [routerLink]="['/shared-spaces', space.id]" class="btn btn-secondary">Open</a>
+              </li>
+            }
+          </ul>
+        }
+      </section>
+    </div>
+  

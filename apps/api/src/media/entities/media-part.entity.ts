@@ -1,4 +1,13 @@
-import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
+import { Media } from './media.entity';
 
 /**
  * Stores metadata for a single chunk of a multipart upload.
@@ -11,6 +20,7 @@ import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 
  * a chunk upload fails and the partial upload is rolled back.
  */
 @Index('idx_media_part_media_id', ['mediaId'])
+@Index('uq_media_part_media_id_part_index', ['mediaId', 'partIndex'], { unique: true })
 @Entity({ name: 'media_parts' })
 export class MediaPart {
   @PrimaryGeneratedColumn('uuid')
@@ -23,6 +33,13 @@ export class MediaPart {
   @Index()
   @Column({ name: 'media_id', type: 'uuid' })
   mediaId!: string;
+
+  @ManyToOne(() => Media, (media) => media.mediaParts, {
+    createForeignKeyConstraints: false,
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({ name: 'media_id' })
+  media!: Media;
 
   /** 0-based index of this chunk within the logical file. */
   @Column({ name: 'part_index', type: 'integer' })

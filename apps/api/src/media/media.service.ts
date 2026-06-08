@@ -1,64 +1,49 @@
-import {
+﻿import {
+  BadRequestException,
+  ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
-  PayloadTooLargeException,
   UnsupportedMediaTypeException,
 } from '@nestjs/common';
-import { HttpException, HttpStatus } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 
 import { AesGcmService } from '../common/encryption/aes-gcm.service';
 import {
-  CloudinaryUploaderService,
   CloudinaryResourceType,
+  CloudinaryUploaderService,
 } from '../common/cloudinary/cloudinary-uploader.service';
 import { CloudinaryAccount } from '../cloudinary-accounts/entities/cloudinary-account.entity';
-import { Media } from './entities/media.entity';
-import { MediaPart } from './entities/media-part.entity';
-import { MagicByteValidator } from './magic-byte.validator';
-import { ALLOWED_MIME_TYPES, isAllowedMimeType, resourceTypeForMime } from './media.constants';
-import { MAX_UPLOAD_SIZE_BYTES } from './dto/upload-preflight.dto';
+import { DirectUploadAbortDto } from './dto/direct-upload-abort.dto';
+import { DirectUploadCompleteDto } from './dto/direct-upload-complete.dto';
+import { DirectUploadInitDto } from './dto/direct-upload-init.dto';
+import { DirectUploadSignPartDto } from './dto/direct-upload-sign-part.dto';
 import { MediaListQueryDto } from './dto/media-list-query.dto';
 import { MediaListResponseDto, MediaResponseDto } from './dto/media-response.dto';
+import { Media, MediaUploadStatus } from './entities/media.entity';
+import { MediaPart } from './entities/media-part.entity';
+import {
+  ALLOWED_MIME_TYPES,
+  DIRECT_UPLOAD_FOLDER_ROOT,
+  DIRECT_UPLOAD_MAX_CHUNK_SIZE_BYTES,
+  isAllowedMimeType,
+  resourceTypeForMime,
+} from './media.constants';
 import { selectAccountForUpload } from './selectors/cloudinary-account-selector';
-import { PreflightRejectReason, PreflightResult } from './types/preflight-result.type';
+import { DirectUploadCompleteResponse } from './types/direct-upload-complete-response.type';
+import { DirectUploadInitResponse } from './types/direct-upload-init-response.type';
+import { DirectUploadSignPartResponse } from './types/direct-upload-sign-part-response.type';
 import { SelectableAccount } from './types/media-upload-target.type';
+import { PreflightRejectReason, PreflightResult } from './types/preflight-result.type';
 
-/**
- * Shape of the multipart file part handed over by Multer
- * (@nestjs/platform-express FileInterceptor). Declared locally because
- * @types/multer is not installed — we only need these fields.
- */
-export interface UploadedFile {
-  originalname: string;
-  mimetype: string;
-  size: number;
-  buffer: Buffer;
+interface SelectableAccountRow extends SelectableAccount {
+  cloudName: string;
 }
 
-/** Metadata that may accompany an upload (from MediaUploadDto). */
-export interface UploadContext {
-  storageSpaceId?: string | null;
-  /** Client-generated UUID tying all chunks of one logical upload. */
-  mediaId?: string;
-  /** 0-based chunk index. Defaults to 0 for single-part uploads. */
-  partIndex?: number;
-  /** Total chunks. Defaults to 1 for single-part uploads. */
-  totalParts?: number;
-  /**
-   * Total byte size of the original file (all chunks combined).
-   * Used on partIndex 0 to reserve the full logical file size.
-   */
-  totalFileSize?: number;
-}
-
-/**
- * Builds the human-readable 507 message that pairs with each reject reason,
- * mirroring StorageModel.md §4.
- */
 const reasonMessage = (
   reason: PreflightRejectReason,
   largestFreeSlotBytes: string,
@@ -85,36 +70,20 @@ export class MediaService {
     private readonly dataSource: DataSource,
     private readonly aesGcm: AesGcmService,
     private readonly uploader: CloudinaryUploaderService,
-    private readonly magicBytes: MagicByteValidator,
   ) {}
 
-  // ── Preflight ──────────────────────────────────────────────────────────────
-
-  /**
-   * POST /api/v1/media/upload/preflight.
-   *
-   * Runs the selection algorithm without touching quota or Cloudinary, so the
-   * UI can show a trustworthy answer before a single byte is uploaded
-   * (StorageModel.md §4). MIME type is validated here too so the preflight is
-   * consistent with what the real upload would accept.
-   */
-  async preflight(
-    userId: string,
-    fileSizeBytes: number,
-    mimeType: string,
-  ): Promise<PreflightResult> {
-    if (!isAllowedMimeType(mimeType)) {
-      throw new UnsupportedMediaTypeException(
-        `Unsupported media type "${mimeType}". Allowed: ${ALLOWED_MIME_TYPES.join(', ')}.`,
-      );
-    }
+  async preflight(userId: string, fileSizeBytes: number, mimeType: string): Promise<PreflightResult> {
+    this.assertAllowedMimeType(mimeType);
 
     const accounts = await this.loadSelectableAccounts(userId);
     const outcome = selectAccountForUpload(accounts, BigInt(fileSizeBytes));
 
     if (outcome.account) {
+      const selected = accounts.find((account) => account.id === outcome.account!.id)!;
       return {
         canUpload: true,
+        cloudName: selected.cloudName,
+        uploadFolder: this.buildUploadFolder(userId),
         targetAccountId: outcome.account.id,
         targetAccountRole: outcome.account.role,
         targetSecondaryOrder: outcome.account.secondaryOrder,
@@ -131,248 +100,234 @@ export class MediaService {
     };
   }
 
-  // ── Upload ───────────────────────────────────────────────────────────────
-
-  /**
-   * POST /api/v1/media/upload.
-   *
-   * Handles both single-part and multipart (chunked) uploads.
-   *
-   * Single-part (partIndex 0, totalParts 1):
-   *   1. Validate size + MIME + magic bytes.
-   *   2. Reserve quota (SELECT FOR UPDATE on chosen account).
-   *   3. Upload to Cloudinary.
-   *   4. Persist Media row.
-   *
-   * Multipart (totalParts > 1):
-   *   partIndex 0  — reserve totalFileSize bytes, upload chunk, save MediaPart.
-   *   intermediate — upload chunk, save MediaPart (no additional reservation).
-   *   final chunk  — upload chunk, save MediaPart, commit Media row
-   *                  (isMultipart = true), delete all MediaPart rows.
-   *   any failure  — destroy all previously uploaded Cloudinary parts for this
-   *                  mediaId, release the storage reservation.
-   */
-  async upload(
+  async directUploadInit(
     userId: string,
-    file: UploadedFile,
-    context: UploadContext = {},
-  ): Promise<MediaResponseDto> {
-    if (!file) {
-      throw new HttpException('No file was provided in the "file" field.', HttpStatus.BAD_REQUEST);
-    }
+    dto: DirectUploadInitDto,
+  ): Promise<DirectUploadInitResponse> {
+    this.assertAllowedMimeType(dto.mimeType);
 
-    // Normalise multipart context with defaults for single-part uploads.
-    const partIndex = context.partIndex ?? 0;
-    const totalParts = context.totalParts ?? 1;
-    const isMultipart = totalParts > 1;
-
-    // ── Step 1 — size ceiling ────────────────────────────────────────────────
-    if (file.size > MAX_UPLOAD_SIZE_BYTES) {
-      throw new PayloadTooLargeException(
-        `File exceeds the ${MAX_UPLOAD_SIZE_BYTES}-byte (100 MB) limit.`,
-      );
-    }
-
-    // ── Step 1 — declared MIME allowlist ────────────────────────────────────
-    if (!isAllowedMimeType(file.mimetype)) {
-      throw new UnsupportedMediaTypeException(
-        `Unsupported media type "${file.mimetype}". Allowed: ${ALLOWED_MIME_TYPES.join(', ')}.`,
-      );
-    }
-
-    // ── Step 2 — magic bytes ─────────────────────────────────────────────────
-    const detected = await this.magicBytes.detect(file.buffer);
-    if (!detected || !isAllowedMimeType(detected.mime)) {
-      throw new UnsupportedMediaTypeException(
-        'File content does not match a supported media type. ' +
-          'The file may be corrupt or disguised.',
-      );
-    }
-    if (!this.familiesMatch(file.mimetype, detected.mime)) {
-      throw new UnsupportedMediaTypeException(
-        `Declared type "${file.mimetype}" does not match detected content "${detected.mime}".`,
-      );
-    }
-
-    const chunkSize = BigInt(file.size);
-    const resourceType = resourceTypeForMime(detected.mime);
-
-    // ── Step 3 — reserve quota (first chunk only for multipart) ─────────────
-    // For multipart uploads, reserve the full logical file size on partIndex 0
-    // so the Vault capacity check is accurate for the entire file, not just
-    // the first chunk.
-    let reserved: CloudinaryAccount;
-
-    if (!isMultipart || partIndex === 0) {
-      const reserveSize =
-        isMultipart && context.totalFileSize != null ? BigInt(context.totalFileSize) : chunkSize;
-      reserved = await this.reserveAccount(userId, reserveSize);
-    } else {
-      // Subsequent chunks: look up the account that was reserved on partIndex 0.
-      const firstPart = await this.mediaPartRepo.findOne({
-        where: { mediaId: context.mediaId, partIndex: 0 },
-        select: ['cloudinaryAccountId'],
-      });
-      if (!firstPart) {
-        throw new HttpException(
-          `No reservation found for mediaId=${context.mediaId}. ` + 'Upload partIndex 0 first.',
-          HttpStatus.BAD_REQUEST,
-        );
-      }
-      const account = await this.accountRepo.findOne({
-        where: { id: firstPart.cloudinaryAccountId },
-      });
-      if (!account) {
-        throw new HttpException(
-          `Cloudinary account for mediaId=${context.mediaId} not found.`,
-          HttpStatus.INTERNAL_SERVER_ERROR,
-        );
-      }
-      reserved = account;
-    }
-
-    // Decrypt credentials (never logged / returned).
-    const apiSecret = this.aesGcm.decrypt(reserved.apiSecretEncrypted);
-
-    // ── Step 4 — upload chunk to Cloudinary ──────────────────────────────────
-    let uploadResult;
-    try {
-      uploadResult = await this.uploader.upload(
-        { cloudName: reserved.cloudName, apiKey: reserved.apiKey, apiSecret },
-        file.buffer,
-        { resourceType, folder: `vaultchat/${userId}` },
-      );
-    } catch {
-      // On failure: release reservation (first chunk) and destroy any
-      // previously uploaded parts for this mediaId.
-      if (!isMultipart || partIndex === 0) {
-        await this.releaseReservation(reserved.id, chunkSize);
-      }
-      if (isMultipart && context.mediaId) {
-        await this.destroyUploadedParts(userId, context.mediaId, resourceType, reserved);
-      }
-      this.logger.error(
-        `Upload to Cloudinary failed; reservation rolled back for ` +
-          `accountId=${reserved.id} userId=${userId} partIndex=${partIndex}.`,
-      );
-      throw new HttpException(
-        'Upload to Cloudinary failed. Please try again.',
-        HttpStatus.BAD_GATEWAY,
-      );
-    }
-
-    // ── Step 5 — persist MediaPart row (multipart) or Media row (single) ─────
-    if (!isMultipart) {
-      // Single-part: create the Media row directly.
-      const media = this.mediaRepo.create({
-        ownerId: userId,
-        cloudinaryAccountId: reserved.id,
-        storageSpaceId: context.storageSpaceId ?? null,
-        cloudinaryPublicId: uploadResult.publicId,
-        url: uploadResult.url,
-        mimeType: detected.mime,
-        sizeBytes: chunkSize.toString(),
-        width: uploadResult.width,
-        height: uploadResult.height,
-        durationSeconds:
-          uploadResult.durationSeconds != null ? uploadResult.durationSeconds.toString() : null,
-        isOrphaned: false,
-        isMultipart: false,
-      });
-
-      const saved = await this.mediaRepo.save(media);
-
-      this.logger.log(
-        `Media uploaded: id=${saved.id} userId=${userId} ` +
-          `accountId=${reserved.id} bytes=${chunkSize.toString()}`,
-      );
-
-      return new MediaResponseDto(saved);
-    }
-
-    // Multipart: save the MediaPart row for this chunk.
-    const clientMediaId = context.mediaId ?? '';
-    const part = this.mediaPartRepo.create({
-      mediaId: clientMediaId,
-      partIndex,
-      totalParts,
-      cloudinaryPublicId: uploadResult.publicId,
-      cloudName: reserved.cloudName,
-      sizeBytes: chunkSize.toString(),
-      cloudinaryAccountId: reserved.id,
-      mimeType: detected.mime,
+    const existing = await this.mediaRepo.findOne({
+      where: { id: dto.mediaId },
+      select: ['id', 'ownerId'],
     });
-    await this.mediaPartRepo.save(part);
 
-    this.logger.log(
-      `MediaPart saved: mediaId=${clientMediaId} partIndex=${partIndex}/${totalParts - 1} ` +
-        `userId=${userId} bytes=${chunkSize.toString()}`,
+    if (existing) {
+      if (existing.ownerId !== userId) {
+        throw new ForbiddenException('You do not own this media upload operation.');
+      }
+      throw new ConflictException(`Media ${dto.mediaId} already exists.`);
+    }
+
+    const preflight = await this.preflight(userId, dto.totalFileSize, dto.mimeType);
+    if (!preflight.canUpload || !preflight.targetAccountId) {
+      throw this.buildInsufficientStorageException(
+        preflight.reason ?? PreflightRejectReason.VAULT_FULL,
+        preflight.largestFreeSlotBytes ?? '0',
+        preflight.vaultFreeBytes ?? '0',
+      );
+    }
+
+    const reservation = await this.createDirectUploadReservation(userId, dto, preflight.targetAccountId);
+    const partZeroPublicId = this.buildPartPublicId(dto.mediaId, 0);
+    const apiSecret = this.aesGcm.decrypt(reservation.account.apiSecretEncrypted);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signed = this.uploader.signUploadParams(
+      {
+        cloudName: reservation.account.cloudName,
+        apiKey: reservation.account.apiKey,
+        apiSecret,
+      },
+      {
+        folder: reservation.folder,
+        public_id: partZeroPublicId,
+        timestamp,
+      },
+      timestamp,
     );
 
-    // ── Step 6 — commit Media row on the final chunk ─────────────────────────
-    const isFinalChunk = partIndex === totalParts - 1;
-
-    if (!isFinalChunk) {
-      // Intermediate chunk: return a minimal response so the client knows
-      // the chunk was accepted. The Media row does not exist yet.
-      return {
-        id: clientMediaId,
-        ownerId: userId,
-        storageSpaceId: context.storageSpaceId ?? null,
-        cloudinaryPublicId: uploadResult.publicId,
-        url: uploadResult.url,
-        mimeType: detected.mime,
-        sizeBytes: chunkSize.toString(),
-        width: null,
-        height: null,
-        durationSeconds: null,
-        createdAt: new Date(),
-      } as MediaResponseDto;
-    }
-
-    // Final chunk: assemble the committed Media row.
-    const firstPart = await this.mediaPartRepo.findOne({
-      where: { mediaId: clientMediaId, partIndex: 0 },
-    });
-
-    const totalSizeBytes = context.totalFileSize ? BigInt(context.totalFileSize) : chunkSize; // fallback: use last chunk size (inaccurate but safe)
-
-    const media = this.mediaRepo.create({
-      ownerId: userId,
-      cloudinaryAccountId: reserved.id,
-      storageSpaceId: context.storageSpaceId ?? null,
-      cloudinaryPublicId: firstPart?.cloudinaryPublicId ?? uploadResult.publicId,
-      url: uploadResult.url,
-      mimeType: detected.mime,
-      sizeBytes: totalSizeBytes.toString(),
-      width: uploadResult.width,
-      height: uploadResult.height,
-      durationSeconds:
-        uploadResult.durationSeconds != null ? uploadResult.durationSeconds.toString() : null,
-      isOrphaned: false,
-      isMultipart: true,
-    });
-
-    const saved = await this.mediaRepo.save(media);
-
-    // Clean up the MediaPart staging rows — they are no longer needed.
-    await this.mediaPartRepo.delete({ mediaId: clientMediaId });
-
-    this.logger.log(
-      `Multipart media committed: id=${saved.id} userId=${userId} ` +
-        `accountId=${reserved.id} totalBytes=${totalSizeBytes.toString()} ` +
-        `parts=${totalParts}`,
-    );
-
-    return new MediaResponseDto(saved);
+    return {
+      uploadId: dto.mediaId,
+      cloudName: reservation.account.cloudName,
+      apiKey: reservation.account.apiKey,
+      signature: signed.signature,
+      timestamp: signed.timestamp,
+      folder: reservation.folder,
+      publicIdPattern: this.buildPublicIdPattern(dto.mediaId),
+      maxChunkSizeBytes: DIRECT_UPLOAD_MAX_CHUNK_SIZE_BYTES,
+    };
   }
 
-  // ── Listing ──────────────────────────────────────────────────────────────
+  async directUploadSignPart(
+    userId: string,
+    dto: DirectUploadSignPartDto,
+  ): Promise<DirectUploadSignPartResponse> {
+    const media = await this.requireOwnedMedia(userId, dto.mediaId, [
+      'id',
+      'ownerId',
+      'cloudinaryAccountId',
+      'uploadStatus',
+      'totalParts',
+    ]);
 
-  /**
-   * GET /api/v1/media — owner's media only, newest first, paginated
-   * (PRD §6.2). Orphaned tombstones are excluded from the gallery.
-   */
+    if (media.uploadStatus !== MediaUploadStatus.UPLOADING) {
+      throw new ConflictException('Chunk signing is only available while uploadStatus is uploading.');
+    }
+    if (dto.totalParts !== media.totalParts) {
+      throw new BadRequestException('totalParts does not match the reserved upload contract.');
+    }
+    if (dto.partIndex < 0 || dto.partIndex >= media.totalParts) {
+      throw new BadRequestException('partIndex is outside the reserved upload range.');
+    }
+
+    const account = await this.requireAccount(media.cloudinaryAccountId);
+    const folder = this.buildUploadFolder(userId);
+    const publicId = this.buildPartPublicId(media.id, dto.partIndex);
+    const apiSecret = this.aesGcm.decrypt(account.apiSecretEncrypted);
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signed = this.uploader.signUploadParams(
+      {
+        cloudName: account.cloudName,
+        apiKey: account.apiKey,
+        apiSecret,
+      },
+      {
+        folder,
+        public_id: publicId,
+        timestamp,
+      },
+      timestamp,
+    );
+
+    return {
+      signature: signed.signature,
+      timestamp: signed.timestamp,
+      publicId,
+      apiKey: account.apiKey,
+      cloudName: account.cloudName,
+    };
+  }
+
+  async directUploadComplete(
+    userId: string,
+    dto: DirectUploadCompleteDto,
+  ): Promise<DirectUploadCompleteResponse> {
+    const media = await this.requireOwnedMedia(userId, dto.mediaId, [
+      'id',
+      'ownerId',
+      'cloudinaryAccountId',
+      'mimeType',
+      'sizeBytes',
+      'totalParts',
+      'uploadStatus',
+      'storageSpaceId',
+      'isMultipart',
+      'isOrphaned',
+      'createdAt',
+      'cloudinaryPublicId',
+      'url',
+      'width',
+      'height',
+      'durationSeconds',
+    ]);
+
+    if (media.uploadStatus !== MediaUploadStatus.UPLOADING) {
+      throw new ConflictException('Only uploading media can be finalized.');
+    }
+
+    this.assertCompleteParts(dto, media.totalParts);
+
+    const reservedBytes = BigInt(media.sizeBytes);
+    const compressedTotalBytes = BigInt(dto.compressedTotalBytes);
+    if (compressedTotalBytes > reservedBytes) {
+      throw new BadRequestException('compressedTotalBytes cannot exceed the originally reserved totalFileSize.');
+    }
+
+    const summedPartBytes = dto.parts.reduce((sum, part) => sum + BigInt(part.sizeBytes), 0n);
+    if (summedPartBytes !== compressedTotalBytes) {
+      throw new BadRequestException('compressedTotalBytes must equal the sum of all uploaded part sizes.');
+    }
+
+    const account = await this.requireAccount(media.cloudinaryAccountId);
+    const finalized = await this.dataSource.transaction(async (manager) => {
+      const mediaPartRepo = manager.getRepository(MediaPart);
+      const mediaRepo = manager.getRepository(Media);
+
+      await mediaPartRepo.delete({ mediaId: media.id });
+      await mediaPartRepo.save(
+        dto.parts.map((part) =>
+          mediaPartRepo.create({
+            mediaId: media.id,
+            partIndex: part.partIndex,
+            totalParts: media.totalParts,
+            cloudinaryPublicId: part.publicId,
+            cloudName: account.cloudName,
+            sizeBytes: String(part.sizeBytes),
+            cloudinaryAccountId: media.cloudinaryAccountId,
+            mimeType: media.mimeType,
+          }),
+        ),
+      );
+
+      const delta = reservedBytes - compressedTotalBytes;
+      if (delta > 0n) {
+        await this.adjustAccountUsage(manager, media.cloudinaryAccountId, -delta);
+      }
+
+      const firstPart = dto.parts.find((part) => part.partIndex === 0)!;
+      media.cloudinaryPublicId = firstPart.publicId;
+      media.url = this.uploader.buildDeliveryUrl(
+        account.cloudName,
+        resourceTypeForMime(media.mimeType),
+        firstPart.publicId,
+      );
+      media.sizeBytes = compressedTotalBytes.toString();
+      media.uploadStatus = MediaUploadStatus.READY;
+      media.isMultipart = media.totalParts > 1;
+
+      return mediaRepo.save(media);
+    });
+
+    this.logger.log(
+      `Direct upload completed: mediaId=${media.id} userId=${userId} ` +
+        `accountId=${media.cloudinaryAccountId} compressedBytes=${compressedTotalBytes.toString()}`,
+    );
+
+    return new MediaResponseDto(finalized);
+  }
+
+  async directUploadAbort(userId: string, dto: DirectUploadAbortDto): Promise<{ success: true }> {
+    const media = await this.requireOwnedMedia(userId, dto.mediaId, [
+      'id',
+      'ownerId',
+      'cloudinaryAccountId',
+      'mimeType',
+      'sizeBytes',
+      'uploadStatus',
+    ]);
+
+    if (media.uploadStatus !== MediaUploadStatus.UPLOADING) {
+      throw new ConflictException('Only uploading media can be aborted.');
+    }
+
+    const account = await this.requireAccount(media.cloudinaryAccountId);
+    const resourceType = resourceTypeForMime(media.mimeType);
+    await this.destroyDirectUploadParts(account, resourceType, dto.uploadedParts.map((part) => part.publicId));
+
+    await this.dataSource.transaction(async (manager) => {
+      await this.adjustAccountUsage(manager, media.cloudinaryAccountId, -BigInt(media.sizeBytes));
+      await manager.getRepository(MediaPart).delete({ mediaId: media.id });
+      media.uploadStatus = MediaUploadStatus.FAILED;
+      await manager.getRepository(Media).save(media);
+    });
+
+    this.logger.log(
+      `Direct upload aborted: mediaId=${media.id} userId=${userId} ` +
+        `released=${media.sizeBytes} accountId=${media.cloudinaryAccountId}`,
+    );
+
+    return { success: true };
+  }
+
   async list(userId: string, query: MediaListQueryDto): Promise<MediaListResponseDto> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 40;
@@ -380,29 +335,19 @@ export class MediaService {
     const qb = this.mediaRepo
       .createQueryBuilder('media')
       .where('media.owner_id = :userId', { userId })
-      .andWhere('media.is_orphaned = false');
+      .andWhere('media.is_orphaned = false')
+      .andWhere('media.upload_status = :uploadStatus', { uploadStatus: MediaUploadStatus.READY });
 
     if (query.type) {
       qb.andWhere('media.mime_type LIKE :prefix', { prefix: `${query.type}/%` });
     }
 
-    qb.orderBy('media.created_at', 'DESC')
-      .skip((page - 1) * limit)
-      .take(limit);
+    qb.orderBy('media.created_at', 'DESC').skip((page - 1) * limit).take(limit);
 
     const [items, total] = await qb.getManyAndCount();
-
     return new MediaListResponseDto(items, page, limit, total);
   }
 
-  // ── Deletion ─────────────────────────────────────────────────────────────
-
-  /**
-   * DELETE /api/v1/media/:id (PRD §6.3).
-   *
-   * Owner-only. Deletes from Cloudinary first, then removes the DB row and
-   * decrements the owning account's `storage_used_bytes` in one transaction.
-   */
   async remove(userId: string, mediaId: string): Promise<{ deleted: true }> {
     const media = await this.mediaRepo.findOne({
       where: { id: mediaId },
@@ -414,17 +359,18 @@ export class MediaService {
         'mimeType',
         'sizeBytes',
         'isOrphaned',
+        'uploadStatus',
       ],
     });
 
     if (!media) {
       throw new NotFoundException(`Media ${mediaId} not found.`);
     }
-
     if (media.ownerId !== userId) {
       throw new ForbiddenException('You do not own this media item.');
     }
 
+    const publicIds = await this.loadMediaPublicIds(mediaId, media.cloudinaryPublicId);
     const resourceType: CloudinaryResourceType = resourceTypeForMime(media.mimeType);
 
     if (!media.isOrphaned) {
@@ -436,13 +382,14 @@ export class MediaService {
       if (account) {
         const apiSecret = this.aesGcm.decrypt(account.apiSecretEncrypted);
         try {
-          await this.uploader.destroy(
-            { cloudName: account.cloudName, apiKey: account.apiKey, apiSecret },
-            media.cloudinaryPublicId,
-            resourceType,
-          );
+          for (const publicId of publicIds) {
+            await this.uploader.destroy(
+              { cloudName: account.cloudName, apiKey: account.apiKey, apiSecret },
+              publicId,
+              resourceType,
+            );
+          }
         } catch {
-          // TODO(phase-later): enqueue a BullMQ `media-destroy-retry` job here.
           this.logger.error(
             `Cloudinary destroy failed for media=${mediaId}; DB row left intact for retry.`,
           );
@@ -455,147 +402,250 @@ export class MediaService {
     }
 
     await this.dataSource.transaction(async (manager) => {
-      if (!media.isOrphaned) {
-        await manager
-          .createQueryBuilder()
-          .update(CloudinaryAccount)
-          .set({
-            storageUsedBytes: () =>
-              `GREATEST(storage_used_bytes - ${BigInt(media.sizeBytes).toString()}, 0)`,
-          })
-          .where('id = :id', { id: media.cloudinaryAccountId })
-          .execute();
+      if (!media.isOrphaned && media.uploadStatus !== MediaUploadStatus.FAILED) {
+        await this.adjustAccountUsage(manager, media.cloudinaryAccountId, -BigInt(media.sizeBytes));
       }
-
-      await manager.delete(Media, { id: mediaId });
+      await manager.getRepository(MediaPart).delete({ mediaId });
+      await manager.getRepository(Media).delete({ id: mediaId });
     });
 
     this.logger.log(
       `Media deleted: id=${mediaId} userId=${userId} ` +
-        `freed=${media.sizeBytes} bytes from accountId=${media.cloudinaryAccountId}`,
+        `freed=${media.uploadStatus === MediaUploadStatus.FAILED ? '0' : media.sizeBytes} ` +
+        `bytes from accountId=${media.cloudinaryAccountId}`,
     );
 
     return { deleted: true };
   }
 
-  // ── Internals ──────────────────────────────────────────────────────────────
+  private assertAllowedMimeType(mimeType: string): void {
+    if (!isAllowedMimeType(mimeType)) {
+      throw new UnsupportedMediaTypeException(
+        `Unsupported media type "${mimeType}". Allowed: ${ALLOWED_MIME_TYPES.join(', ')}.`,
+      );
+    }
+  }
 
-  private async loadSelectableAccounts(userId: string): Promise<SelectableAccount[]> {
+  private async loadSelectableAccounts(userId: string): Promise<SelectableAccountRow[]> {
     const rows = await this.accountRepo.find({
       where: { userId, isActive: true },
-      select: ['id', 'role', 'secondaryOrder', 'storageUsedBytes', 'storageLimitBytes'],
+      select: ['id', 'role', 'secondaryOrder', 'storageUsedBytes', 'storageLimitBytes', 'cloudName'],
     });
 
-    return rows.map((r) => ({
-      id: r.id,
-      role: r.role,
-      secondaryOrder: r.secondaryOrder,
-      storageUsedBytes: r.storageUsedBytes,
-      storageLimitBytes: r.storageLimitBytes,
+    return rows.map((row) => ({
+      id: row.id,
+      role: row.role,
+      secondaryOrder: row.secondaryOrder,
+      storageUsedBytes: row.storageUsedBytes,
+      storageLimitBytes: row.storageLimitBytes,
+      cloudName: row.cloudName,
     }));
   }
 
-  private async reserveAccount(userId: string, fileSize: bigint): Promise<CloudinaryAccount> {
-    return this.dataSource.transaction(async (manager) => {
-      const locked = await manager
-        .createQueryBuilder(CloudinaryAccount, 'account')
-        .setLock('pessimistic_write')
-        .where('account.user_id = :userId', { userId })
-        .andWhere('account.is_active = true')
-        .orderBy('account.role', 'ASC')
-        .addOrderBy('account.secondary_order', 'ASC')
-        .getMany();
+  private buildInsufficientStorageException(
+    reason: PreflightRejectReason,
+    largestFreeSlotBytes: string,
+    vaultFreeBytes: string,
+  ): HttpException {
+    return new HttpException(
+      {
+        statusCode: HttpStatus.INSUFFICIENT_STORAGE,
+        error: 'Insufficient Storage',
+        reason,
+        message: reasonMessage(reason, largestFreeSlotBytes, vaultFreeBytes),
+        largestFreeSlotBytes,
+        vaultFreeBytes,
+      },
+      HttpStatus.INSUFFICIENT_STORAGE,
+    );
+  }
 
-      const selectable: SelectableAccount[] = locked.map((r) => ({
-        id: r.id,
-        role: r.role,
-        secondaryOrder: r.secondaryOrder,
-        storageUsedBytes: r.storageUsedBytes,
-        storageLimitBytes: r.storageLimitBytes,
+  private async createDirectUploadReservation(
+    userId: string,
+    dto: DirectUploadInitDto,
+    expectedAccountId: string,
+  ): Promise<{ account: CloudinaryAccount; folder: string }> {
+    return this.dataSource.transaction(async (manager) => {
+      const accounts = await this.loadLockedAccounts(manager, userId);
+      const selectable: SelectableAccount[] = accounts.map((account) => ({
+        id: account.id,
+        role: account.role,
+        secondaryOrder: account.secondaryOrder,
+        storageUsedBytes: account.storageUsedBytes,
+        storageLimitBytes: account.storageLimitBytes,
       }));
 
-      const outcome = selectAccountForUpload(selectable, fileSize);
-
+      const outcome = selectAccountForUpload(selectable, BigInt(dto.totalFileSize));
       if (!outcome.account) {
-        const reason = outcome.reason ?? PreflightRejectReason.VAULT_FULL;
-        throw new HttpException(
-          {
-            statusCode: HttpStatus.INSUFFICIENT_STORAGE,
-            error: 'Insufficient Storage',
-            reason,
-            message: reasonMessage(reason, outcome.largestFreeSlotBytes, outcome.vaultFreeBytes),
-            largestFreeSlotBytes: outcome.largestFreeSlotBytes,
-            vaultFreeBytes: outcome.vaultFreeBytes,
-          },
-          HttpStatus.INSUFFICIENT_STORAGE,
+        throw this.buildInsufficientStorageException(
+          outcome.reason ?? PreflightRejectReason.VAULT_FULL,
+          outcome.largestFreeSlotBytes,
+          outcome.vaultFreeBytes,
         );
       }
+      if (outcome.account.id !== expectedAccountId) {
+        throw new ConflictException('Upload target changed since preflight. Run preflight again.');
+      }
 
-      const chosen = locked.find((a) => a.id === outcome.account!.id)!;
+      const chosen = accounts.find((account) => account.id === expectedAccountId);
+      if (!chosen) {
+        throw new NotFoundException(`Cloudinary account ${expectedAccountId} not found.`);
+      }
 
-      await manager
-        .createQueryBuilder()
-        .update(CloudinaryAccount)
-        .set({ storageUsedBytes: () => `storage_used_bytes + ${fileSize.toString()}` })
-        .where('id = :id', { id: chosen.id })
-        .execute();
+      const folder = this.buildUploadFolder(userId);
+      await this.adjustAccountUsage(manager, chosen.id, BigInt(dto.totalFileSize));
 
-      return chosen;
+      const mediaRepo = manager.getRepository(Media);
+      const publicId = this.buildFullPublicId(folder, this.buildPartPublicId(dto.mediaId, 0));
+      await mediaRepo.save(
+        mediaRepo.create({
+          id: dto.mediaId,
+          ownerId: userId,
+          cloudinaryAccountId: chosen.id,
+          storageSpaceId: null,
+          cloudinaryPublicId: publicId,
+          url: this.uploader.buildDeliveryUrl(chosen.cloudName, resourceTypeForMime(dto.mimeType), publicId),
+          mimeType: dto.mimeType,
+          sizeBytes: String(dto.totalFileSize),
+          width: null,
+          height: null,
+          durationSeconds: null,
+          isOrphaned: false,
+          isMultipart: dto.totalParts > 1,
+          totalParts: dto.totalParts,
+          uploadStatus: MediaUploadStatus.UPLOADING,
+        }),
+      );
+
+      return { account: chosen, folder };
     });
   }
 
-  private async releaseReservation(accountId: string, fileSize: bigint): Promise<void> {
-    await this.accountRepo
-      .createQueryBuilder()
-      .update(CloudinaryAccount)
-      .set({
-        storageUsedBytes: () => `GREATEST(storage_used_bytes - ${fileSize.toString()}, 0)`,
-      })
-      .where('id = :id', { id: accountId })
-      .execute();
+  private async loadLockedAccounts(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<CloudinaryAccount[]> {
+    return manager
+      .createQueryBuilder(CloudinaryAccount, 'account')
+      .setLock('pessimistic_write')
+      .where('account.user_id = :userId', { userId })
+      .andWhere('account.is_active = true')
+      .orderBy('account.role', 'ASC')
+      .addOrderBy('account.secondary_order', 'ASC')
+      .getMany();
   }
 
-  /**
-   * Destroys all Cloudinary assets previously uploaded for a given mediaId
-   * (used during multipart upload rollback). Best-effort — errors are logged
-   * but do not throw so the caller can still surface the original failure.
-   */
-  private async destroyUploadedParts(
-    userId: string,
-    mediaId: string,
-    resourceType: CloudinaryResourceType,
-    account: CloudinaryAccount,
+  private async adjustAccountUsage(
+    manager: EntityManager,
+    accountId: string,
+    delta: bigint,
   ): Promise<void> {
+    const repo = manager.getRepository(CloudinaryAccount);
+    const account = await repo.findOne({ where: { id: accountId } });
+    if (!account) {
+      throw new NotFoundException(`Cloudinary account ${accountId} not found.`);
+    }
+
+    const next = BigInt(account.storageUsedBytes) + delta;
+    account.storageUsedBytes = (next > 0n ? next : 0n).toString();
+    await repo.save(account);
+  }
+
+  private async requireOwnedMedia(userId: string, mediaId: string, select: (keyof Media)[]): Promise<Media> {
+    const media = await this.mediaRepo.findOne({ where: { id: mediaId }, select });
+    if (!media) {
+      throw new NotFoundException(`Media ${mediaId} not found.`);
+    }
+    if (media.ownerId !== userId) {
+      throw new ForbiddenException('You do not own this media item.');
+    }
+    return media;
+  }
+
+  private async requireAccount(accountId: string): Promise<CloudinaryAccount> {
+    const account = await this.accountRepo.findOne({
+      where: { id: accountId },
+      select: [
+        'id',
+        'cloudName',
+        'apiKey',
+        'apiSecretEncrypted',
+        'storageUsedBytes',
+        'storageLimitBytes',
+        'userId',
+        'role',
+        'secondaryOrder',
+        'isActive',
+      ],
+    });
+    if (!account) {
+      throw new NotFoundException(`Cloudinary account ${accountId} not found.`);
+    }
+    return account;
+  }
+
+  private async loadMediaPublicIds(mediaId: string, fallbackPublicId: string): Promise<string[]> {
     const parts = await this.mediaPartRepo.find({
       where: { mediaId },
       select: ['cloudinaryPublicId'],
+      order: { partIndex: 'ASC' },
     });
+    const ids = parts.map((part) => part.cloudinaryPublicId);
+    if (ids.length === 0) {
+      ids.push(fallbackPublicId);
+    }
+    return [...new Set(ids)];
+  }
 
-    if (parts.length === 0) return;
+  private async destroyDirectUploadParts(
+    account: CloudinaryAccount,
+    resourceType: CloudinaryResourceType,
+    publicIds: string[],
+  ): Promise<void> {
+    if (publicIds.length === 0) {
+      return;
+    }
 
     const apiSecret = this.aesGcm.decrypt(account.apiSecretEncrypted);
-
-    for (const part of parts) {
+    for (const publicId of [...new Set(publicIds)]) {
       try {
         await this.uploader.destroy(
           { cloudName: account.cloudName, apiKey: account.apiKey, apiSecret },
-          part.cloudinaryPublicId,
+          publicId,
           resourceType,
         );
       } catch {
-        this.logger.warn(
-          `Failed to destroy Cloudinary part ${part.cloudinaryPublicId} ` +
-            `for mediaId=${mediaId} userId=${userId} — manual cleanup may be needed.`,
-        );
+        this.logger.warn(`Failed to destroy Cloudinary part ${publicId} during direct-upload abort.`);
       }
     }
-
-    // Remove the staging rows regardless of destroy success.
-    await this.mediaPartRepo.delete({ mediaId });
   }
 
-  private familiesMatch(declared: string, detected: string): boolean {
-    const family = (m: string): string => m.split('/')[0] ?? m;
-    return family(declared) === family(detected);
+  private assertCompleteParts(dto: DirectUploadCompleteDto, expectedTotalParts: number): void {
+    if (dto.parts.length !== expectedTotalParts) {
+      throw new BadRequestException('parts must contain every index from 0 through totalParts - 1.');
+    }
+
+    const indices = dto.parts.map((part) => part.partIndex).sort((a, b) => a - b);
+    for (let index = 0; index < expectedTotalParts; index += 1) {
+      if (indices[index] !== index) {
+        throw new BadRequestException('parts must contain every index from 0 through totalParts - 1.');
+      }
+    }
+  }
+
+  private buildUploadFolder(userId: string): string {
+    return `${DIRECT_UPLOAD_FOLDER_ROOT}/${userId}`;
+  }
+
+  private buildPartPublicId(mediaId: string, partIndex: number): string {
+    return `${mediaId}__part_${partIndex}`;
+  }
+
+  private buildPublicIdPattern(mediaId: string): string {
+    return `${mediaId}__part_{partIndex}`;
+  }
+
+  private buildFullPublicId(folder: string, publicId: string): string {
+    return `${folder}/${publicId}`;
   }
 }

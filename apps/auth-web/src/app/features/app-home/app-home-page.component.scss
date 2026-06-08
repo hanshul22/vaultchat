@@ -1,0 +1,44 @@
+
+      .app-home {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        gap: 16px;
+        padding: 32px;
+        text-align: center;
+        font-family: sans-serif;
+      }
+
+      .app-home__badge {
+        margin: 0;
+        padding: 6px 14px;
+        border-radius: 4px;
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        color: #856404;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+
+      .app-home__title {
+        margin: 0;
+        font-size: 2rem;
+      }
+
+      .app-home__subtitle {
+        margin: 0;
+        color: #6b7280;
+        font-size: 1.1rem;
+      }
+
+      .app-home__note {
+        max-width: 480px;
+        margin: 0;
+        color: #374151;
+        font-size: 0.95rem;
+        line-height: 1.6;
+      }
+    

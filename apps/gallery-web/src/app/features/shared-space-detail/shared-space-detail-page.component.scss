@@ -1,0 +1,155 @@
+
+      .page {
+        max-width: 760px;
+      }
+      .page-header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+      }
+      .page-title {
+        font-size: 1.5rem;
+        margin: 0;
+      }
+      .meta-row {
+        display: flex;
+        gap: 2rem;
+        color: #6b7280;
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+        flex-wrap: wrap;
+      }
+      .section {
+        margin-bottom: 2rem;
+      }
+      .section-title {
+        font-size: 1.1rem;
+        margin-bottom: 0.75rem;
+      }
+      .inline-form {
+        display: flex;
+        gap: 0.75rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .add-member-form {
+        margin-top: 1rem;
+      }
+      .input {
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 0.9rem;
+        min-width: 200px;
+      }
+      .select {
+        padding: 0.5rem 0.5rem;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 0.9rem;
+      }
+      .textarea {
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 0.9rem;
+        width: 100%;
+        max-width: 400px;
+        resize: vertical;
+      }
+      .btn {
+        padding: 0.5rem 1rem;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.9rem;
+      }
+      .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .btn-primary {
+        background: #4f46e5;
+        color: #fff;
+      }
+      .btn-primary:hover:not(:disabled) {
+        background: #4338ca;
+      }
+      .btn-danger {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+      .btn-danger:hover:not(:disabled) {
+        background: #fecaca;
+      }
+      .member-list {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .member-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.6rem 0.75rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        flex-wrap: wrap;
+      }
+      .member-name {
+        font-weight: 600;
+      }
+      .member-email {
+        color: #6b7280;
+        font-size: 0.875rem;
+        flex: 1;
+      }
+      .role-badge {
+        font-size: 0.75rem;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+      .role-owner {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      .role-editor {
+        background: #dbeafe;
+        color: #1e40af;
+      }
+      .role-viewer {
+        background: #f3f4f6;
+        color: #374151;
+      }
+      .hint {
+        color: #6b7280;
+        font-size: 0.875rem;
+        margin-bottom: 0.5rem;
+      }
+      .status,
+      .empty {
+        color: #6b7280;
+      }
+      .error {
+        color: #dc2626;
+        margin-top: 0.5rem;
+      }
+      .success {
+        color: #16a34a;
+        margin-top: 0.5rem;
+      }
+      .error-block {
+        padding: 1rem;
+        background: #fee2e2;
+        border: 1px solid #fca5a5;
+        border-radius: 6px;
+        color: #991b1b;
+        margin-bottom: 1rem;
+      }
+    

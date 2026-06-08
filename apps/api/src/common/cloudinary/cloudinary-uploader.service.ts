@@ -29,6 +29,15 @@ export interface CloudinaryUploadResult {
   resourceType: string;
 }
 
+export interface CloudinarySignedParams {
+  signature: string;
+  timestamp: number;
+}
+
+export interface CloudinaryUsageResult {
+  storageUsedBytes: string;
+}
+
 /**
  * Performs signed uploads and destroys against a user's own Cloudinary account.
  *
@@ -62,7 +71,7 @@ export class CloudinaryUploaderService {
     const signParams: Record<string, string | number> = { timestamp };
     if (options.folder) signParams['folder'] = options.folder;
 
-    const signature = this.sign(signParams, apiSecret);
+    const { signature } = this.signParams(signParams, apiSecret, timestamp);
 
     const form = new FormData();
     form.append('file', new Blob([new Uint8Array(file)]));
@@ -114,7 +123,7 @@ export class CloudinaryUploaderService {
     const { cloudName, apiKey, apiSecret } = credentials;
     const timestamp = Math.floor(Date.now() / 1000);
 
-    const signature = this.sign({ public_id: publicId, timestamp }, apiSecret);
+    const { signature } = this.signParams({ public_id: publicId, timestamp }, apiSecret, timestamp);
 
     const form = new FormData();
     form.append('public_id', publicId);
@@ -136,17 +145,98 @@ export class CloudinaryUploaderService {
     }
   }
 
+  async fetchUsage(credentials: CloudinaryCredentials): Promise<CloudinaryUsageResult> {
+    const { cloudName, apiKey, apiSecret } = credentials;
+    const url = `https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudName)}/usage`;
+
+    try {
+      const { data } = await axios.get(url, {
+        auth: { username: apiKey, password: apiSecret },
+        timeout: 15_000,
+      });
+
+      const storageUsedBytes = this.extractUsageBytes(data);
+      return { storageUsedBytes: storageUsedBytes.toString() };
+    } catch (err) {
+      this.logFailure('usage', cloudName, err);
+      throw new Error(`Cloudinary usage fetch failed for cloud "${cloudName}".`);
+    }
+  }
+
+  signUploadParams(
+    credentials: CloudinaryCredentials,
+    params: Record<string, string | number>,
+    timestamp = Math.floor(Date.now() / 1000),
+  ): CloudinarySignedParams {
+    return this.signParams(params, credentials.apiSecret, timestamp);
+  }
+
+  buildDeliveryUrl(
+    cloudName: string,
+    resourceType: CloudinaryResourceType,
+    publicId: string,
+  ): string {
+    const encodedPublicId = publicId
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+
+    return `https://res.cloudinary.com/${encodeURIComponent(cloudName)}/${resourceType}/upload/${encodedPublicId}`;
+  }
+
   /**
    * Cloudinary signature: sort the params to sign by key, join as
    * `k=v&k=v`, append the api_secret, then SHA-1 hex.
    */
-  private sign(params: Record<string, string | number>, apiSecret: string): string {
+  private signParams(
+    params: Record<string, string | number>,
+    apiSecret: string,
+    timestamp: number,
+  ): CloudinarySignedParams {
     const toSign = Object.keys(params)
       .sort()
       .map((key) => `${key}=${params[key]}`)
       .join('&');
 
-    return createHash('sha1').update(`${toSign}${apiSecret}`).digest('hex');
+    return {
+      signature: createHash('sha1').update(`${toSign}${apiSecret}`).digest('hex'),
+      timestamp,
+    };
+  }
+
+  private extractUsageBytes(payload: unknown): bigint {
+    const data = payload as Record<string, unknown> | null;
+    const candidates = [
+      (data?.['storage'] as Record<string, unknown> | undefined)?.['usage'],
+      (data?.['usage'] as Record<string, unknown> | undefined)?.['storage'],
+      (data?.['storage'] as Record<string, unknown> | undefined)?.['used_bytes'],
+      data?.['storage_usage'],
+    ];
+
+    for (const candidate of candidates) {
+      const parsed = this.toBigInt(candidate);
+      if (parsed !== null) {
+        return parsed >= 0n ? parsed : 0n;
+      }
+    }
+
+    throw new Error('Cloudinary usage response did not include storage usage bytes.');
+  }
+
+  private toBigInt(value: unknown): bigint | null {
+    if (typeof value === 'bigint') {
+      return value;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return BigInt(Math.trunc(value));
+    }
+
+    if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+      return BigInt(value);
+    }
+
+    return null;
   }
 
   /** Logs a failure without ever including credentials or the secret. */

@@ -1,0 +1,55 @@
+
+    <section class="auth-page">
+      <p class="eyebrow">GET STARTED</p>
+      <h1>Create your account</h1>
+      <p class="intro">Set up your VaultChat account to continue.</p>
+
+      <form class="auth-form" [formGroup]="form" (ngSubmit)="onSubmit()">
+        <mat-form-field appearance="outline">
+          <mat-label>Full Name</mat-label>
+          <input matInput formControlName="fullName" autocomplete="name" />
+          @if (form.get('fullName')?.touched && form.get('fullName')?.hasError('required')) {
+            <mat-error>Full name is required</mat-error>
+          }
+          @if (form.get('fullName')?.touched && form.get('fullName')?.hasError('minlength')) {
+            <mat-error>Must be at least 2 characters</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Email</mat-label>
+          <input matInput formControlName="email" type="email" autocomplete="email" />
+          @if (form.get('email')?.touched && form.get('email')?.hasError('required')) {
+            <mat-error>Email is required</mat-error>
+          }
+          @if (form.get('email')?.touched && form.get('email')?.hasError('email')) {
+            <mat-error>Enter a valid email address</mat-error>
+          }
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>Password</mat-label>
+          <input matInput formControlName="password" type="password" autocomplete="new-password" />
+          @if (form.get('password')?.touched && form.get('password')?.hasError('required')) {
+            <mat-error>Password is required</mat-error>
+          }
+          @if (form.get('password')?.touched && form.get('password')?.hasError('minlength')) {
+            <mat-error>Password must be at least 8 characters</mat-error>
+          }
+        </mat-form-field>
+
+        @if (errorMessage) {
+          <p class="error-message">{{ errorMessage }}</p>
+        }
+
+        <button type="submit" [disabled]="form.invalid || isSubmitting">
+          {{ isSubmitting ? 'Creating account...' : 'Create account' }}
+        </button>
+      </form>
+
+      <p class="auth-link">
+        Already have an account?
+        <a routerLink="/login">Sign in</a>
+      </p>
+    </section>
+  

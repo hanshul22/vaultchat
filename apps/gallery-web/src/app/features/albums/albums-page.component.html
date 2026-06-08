@@ -1,0 +1,94 @@
+
+    <div class="albums-page">
+      <!-- ── Header ─────────────────────────────────────────────────────── -->
+      <header class="albums-page__header">
+        <h1 class="albums-page__title">Albums</h1>
+        @if (loadState() === 'loaded') {
+          <span class="albums-page__count">
+            {{ meta()?.total ?? 0 }} album{{ (meta()?.total ?? 0) === 1 ? '' : 's' }}
+          </span>
+        }
+      </header>
+
+      <!-- ── Loading ────────────────────────────────────────────────────── -->
+      @if (loadState() === 'loading') {
+        <div class="albums-page__loading" role="status" aria-live="polite">
+          <span class="albums-page__spinner" aria-hidden="true"></span>
+          <span>Loading your albums…</span>
+        </div>
+      }
+
+      <!-- ── Error ──────────────────────────────────────────────────────── -->
+      @if (loadState() === 'error') {
+        <div class="albums-page__error" role="alert">
+          <p>Could not load your albums. Please try again.</p>
+          <button type="button" class="albums-page__retry" (click)="load()">Retry</button>
+        </div>
+      }
+
+      <!-- ── Empty state ────────────────────────────────────────────────── -->
+      @if (loadState() === 'loaded' && albums().length === 0) {
+        <div class="albums-page__empty">
+          <p class="albums-page__empty-title">No albums yet</p>
+          <p class="albums-page__empty-hint">
+            Create your first album to organise your Vault media into collections.
+          </p>
+        </div>
+      }
+
+      <!-- ── Grid ───────────────────────────────────────────────────────── -->
+      @if (loadState() === 'loaded' && albums().length > 0) {
+        <ul class="albums-grid" aria-label="Albums">
+          @for (album of albums(); track album.id) {
+            <li>
+              <a
+                class="album-card"
+                [routerLink]="['/albums', album.id]"
+                [attr.aria-label]="album.name"
+              >
+                <!-- Cover placeholder / icon -->
+                <div class="album-card__cover">
+                  @if (album.coverMediaId) {
+                    <!-- Cover image will be resolved in the detail phase -->
+                    <span class="album-card__cover-icon" aria-hidden="true">🖼</span>
+                  } @else {
+                    <span class="album-card__cover-icon" aria-hidden="true">📁</span>
+                  }
+                </div>
+
+                <!-- Album info -->
+                <div class="album-card__body">
+                  <p class="album-card__name">{{ album.name }}</p>
+
+                  @if (album.description) {
+                    <p class="album-card__description">{{ album.description }}</p>
+                  }
+
+                  <div class="album-card__meta">
+                    <span class="album-card__count">
+                      {{ album.mediaCount }}
+                      item{{ album.mediaCount === 1 ? '' : 's' }}
+                    </span>
+                    <time class="album-card__date" [dateTime]="album.createdAt">
+                      {{ album.createdAt | date: 'dd MMM yyyy' }}
+                    </time>
+                  </div>
+                </div>
+
+                <!-- Chevron -->
+                <span class="album-card__chevron" aria-hidden="true">›</span>
+              </a>
+            </li>
+          }
+        </ul>
+
+        <!-- ── Pagination hint ─────────────────────────────────────────── -->
+        @if (meta() && meta()!.totalPages > 1) {
+          <p class="albums-page__pagination-hint">
+            Showing page {{ meta()!.page }} of {{ meta()!.totalPages }} ({{ meta()!.total }} albums
+            total). Full pagination will be added in the next phase.
+          </p>
+        }
+      }
+    </div>
+  

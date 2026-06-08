@@ -7,7 +7,7 @@ export const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024;
 /**
  * Body for POST /api/v1/media/upload/preflight.
  *
- * The UI calls this before starting a large upload to get a deterministic
+ * The UI calls this before starting a direct upload to get a deterministic
  * yes/no answer (and the target account) without consuming any quota.
  *
  * `mimeType` is validated against the allowlist inside the service so the

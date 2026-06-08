@@ -22,79 +22,8 @@ import { AuthService } from '../../core/services/auth.service';
     AuthShellComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <app-auth-shell
-      eyebrow="Welcome back"
-      title="Login"
-      description="Sign in to continue to VaultChat."
-    >
-      <form class="auth-form" [formGroup]="form" (ngSubmit)="onSubmit()">
-        <mat-form-field appearance="outline">
-          <mat-label>Email</mat-label>
-          <input matInput type="email" formControlName="email" autocomplete="email" />
-          @if (form.controls.email.hasError('required')) {
-            <mat-error>Email is required.</mat-error>
-          }
-          @if (form.controls.email.hasError('email')) {
-            <mat-error>Enter a valid email address.</mat-error>
-          }
-        </mat-form-field>
-
-        <mat-form-field appearance="outline">
-          <mat-label>Password</mat-label>
-          <input
-            matInput
-            type="password"
-            formControlName="password"
-            autocomplete="current-password"
-          />
-          @if (form.controls.password.hasError('required')) {
-            <mat-error>Password is required.</mat-error>
-          }
-        </mat-form-field>
-
-        @if (errorMessage) {
-          <p class="auth-page__error">{{ errorMessage }}</p>
-        }
-
-        <div class="auth-page__actions">
-          <button
-            mat-flat-button
-            color="primary"
-            type="submit"
-            [disabled]="isSubmitting || form.invalid"
-          >
-            {{ isSubmitting ? 'Signing in...' : 'Continue' }}
-          </button>
-
-          <a mat-button routerLink="/signup">Create an account</a>
-          <a mat-button routerLink="/forgot-password">Forgot password?</a>
-        </div>
-      </form>
-    </app-auth-shell>
-  `,
-  styles: [
-    `
-      .auth-form {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-      }
-
-      .auth-page__actions {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        align-items: stretch;
-      }
-
-      .auth-page__error {
-        margin: 0;
-        font-size: 14px;
-        color: #b3261e;
-      }
-    `,
-  ],
+  templateUrl: './login-page.component.html',
+  styleUrl: './login-page.component.scss',
 })
 export class LoginPageComponent {
   private readonly fb = inject(FormBuilder);

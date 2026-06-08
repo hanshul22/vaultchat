@@ -1,9 +1,12 @@
 import { HttpInterceptorFn } from '@angular/common/http';
 
-export const authInterceptor: HttpInterceptorFn = (req, next) => {
-  const token = localStorage.getItem('access_token');
-  if (token) {
-    req = req.clone({ setHeaders: { Authorization: `Bearer ${token}` } });
-  }
-  return next(req);
-};
+/**
+ * Deprecated legacy interceptor.
+ *
+ * gallery-web now uses the shared auth interceptors from @chat-media/shared/auth:
+ * - authTokenInterceptor
+ * - refreshRetryInterceptor
+ *
+ * Do not register this interceptor in app.config.ts.
+ */
+export const authInterceptor: HttpInterceptorFn = (req, next) => next(req);

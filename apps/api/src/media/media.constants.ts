@@ -14,6 +14,15 @@ export const ALLOWED_MIME_TYPES = [
   'video/quicktime',
 ] as const;
 
+/** Direct-upload signatures are intentionally short-lived (10 minutes). */
+export const DIRECT_UPLOAD_SIGNATURE_TTL_SECONDS = 10 * 60;
+
+/** Frontend chunk size contract for direct browser-to-Cloudinary uploads. */
+export const DIRECT_UPLOAD_MAX_CHUNK_SIZE_BYTES = 20 * 1024 * 1024;
+
+/** Folder prefix used for all per-user Cloudinary direct uploads. */
+export const DIRECT_UPLOAD_FOLDER_ROOT = 'vaultchat';
+
 export type AllowedMimeType = (typeof ALLOWED_MIME_TYPES)[number];
 
 /** Fast membership test for the allowlist. */

@@ -1,26 +1,20 @@
-import {
-  PayloadTooLargeException,
-  UnsupportedMediaTypeException,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
+import { ConflictException, HttpException, HttpStatus } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 
 import {
   CloudinaryAccount,
   CloudinaryAccountRole,
 } from '../cloudinary-accounts/entities/cloudinary-account.entity';
-import { Media } from './entities/media.entity';
-import { MediaService, UploadedFile } from './media.service';
-import { MagicByteValidator } from './magic-byte.validator';
 import { AesGcmService } from '../common/encryption/aes-gcm.service';
 import { CloudinaryUploaderService } from '../common/cloudinary/cloudinary-uploader.service';
+import { MediaService } from './media.service';
+import { Media, MediaUploadStatus } from './entities/media.entity';
+import { MediaPart } from './entities/media-part.entity';
 import { PreflightRejectReason } from './types/preflight-result.type';
 
-/** 1 GiB in bytes. */
-const GiB = BigInt(1024 ** 3);
+const MB = 1024 * 1024;
 
-interface FakeAccount {
+type FakeAccount = {
   id: string;
   userId: string;
   role: CloudinaryAccountRole;
@@ -31,134 +25,247 @@ interface FakeAccount {
   cloudName: string;
   apiKey: string;
   apiSecretEncrypted: string;
-}
-
-/** Mutable in-memory store standing in for the cloudinary_accounts table. */
-class FakeDb {
-  accounts: FakeAccount[] = [];
-  /** Serialises transactions to model `SELECT … FOR UPDATE` row locking. */
-  lock: Promise<unknown> = Promise.resolve();
-}
-
-/** Applies a TypeORM raw-SQL `set` fragment to a fake row. */
-const applySql = (target: FakeAccount, sql: string): void => {
-  const plus = sql.match(/storage_used_bytes \+ (\d+)/);
-  if (plus) {
-    target.storageUsedBytes = (BigInt(target.storageUsedBytes) + BigInt(plus[1]!)).toString();
-    return;
-  }
-  const minus = sql.match(/storage_used_bytes - (\d+)/);
-  if (minus) {
-    const next = BigInt(target.storageUsedBytes) - BigInt(minus[1]!);
-    target.storageUsedBytes = (next > 0n ? next : 0n).toString();
-  }
 };
 
-/** Builds a chainable query-builder mock backed by the fake DB. */
-const makeQueryBuilder = (db: FakeDb) => {
-  let whereId: string | null = null;
-  let setFn: (() => string) | null = null;
-
-  const qb: Record<string, unknown> = {
-    setLock: () => qb,
-    where: (_cond: string, params?: Record<string, unknown>) => {
-      if (params && typeof params['id'] === 'string') {
-        whereId = params['id'] as string;
-      }
-      return qb;
-    },
-    andWhere: () => qb,
-    orderBy: () => qb,
-    addOrderBy: () => qb,
-    getMany: async (): Promise<FakeAccount[]> =>
-      db.accounts.filter((a) => a.isActive).map((a) => ({ ...a })),
-    update: () => qb,
-    set: (obj: { storageUsedBytes: () => string }) => {
-      setFn = obj.storageUsedBytes;
-      return qb;
-    },
-    execute: async () => {
-      const target = db.accounts.find((a) => a.id === whereId);
-      if (target && setFn) applySql(target, setFn());
-      return { affected: target ? 1 : 0 };
-    },
-  };
-  return qb;
+type FakeMedia = {
+  id: string;
+  ownerId: string;
+  cloudinaryAccountId: string;
+  storageSpaceId: string | null;
+  cloudinaryPublicId: string;
+  url: string;
+  mimeType: string;
+  sizeBytes: string;
+  width: number | null;
+  height: number | null;
+  durationSeconds: string | null;
+  isOrphaned: boolean;
+  isMultipart: boolean;
+  totalParts: number;
+  uploadStatus: MediaUploadStatus;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
-/** Wires a MediaService with controllable mocks around the fake DB. */
-const makeService = (accounts: FakeAccount[]) => {
-  const db = new FakeDb();
-  db.accounts = accounts;
+type FakeMediaPart = {
+  id: string;
+  mediaId: string;
+  partIndex: number;
+  totalParts: number;
+  cloudinaryPublicId: string;
+  cloudName: string;
+  sizeBytes: string;
+  cloudinaryAccountId: string;
+  mimeType: string;
+  createdAt: Date;
+};
 
-  const accountRepo = {
-    find: async () => db.accounts.filter((a) => a.isActive).map((a) => ({ ...a })),
-    findOne: async ({ where }: { where: { id: string } }) =>
-      db.accounts.find((a) => a.id === where.id) ?? null,
-    createQueryBuilder: () => makeQueryBuilder(db),
-  } as unknown as Repository<CloudinaryAccount>;
+interface FakeDb {
+  accounts: FakeAccount[];
+  media: FakeMedia[];
+  parts: FakeMediaPart[];
+}
 
-  const savedRows: Media[] = [];
-  const mediaRepo = {
-    create: (input: Partial<Media>) => ({ ...input }) as Media,
-    save: async (input: Media) => {
-      const row = {
-        ...input,
-        id: `media-${savedRows.length + 1}`,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      } as Media;
-      savedRows.push(row);
-      return row;
-    },
-    createQueryBuilder: () => makeQueryBuilder(db),
-  } as unknown as Repository<Media>;
+const clone = <T>(value: T): T => structuredClone(value);
 
-  // Minimal MediaPart repository mock — multipart paths are not exercised
-  // by the existing single-part upload tests.
-  const mediaPartRepo = {
-    create: jest.fn((input: unknown) => input),
-    save: jest.fn(async (input: unknown) => input),
-    findOne: jest.fn(async () => null),
-    find: jest.fn(async () => []),
-    delete: jest.fn(async () => ({ affected: 0 })),
-  } as unknown as Repository<import('./entities/media-part.entity').MediaPart>;
+const sortAccounts = (accounts: FakeAccount[]): FakeAccount[] =>
+  [...accounts].sort((a, b) => {
+    if (a.role !== b.role) {
+      return a.role === CloudinaryAccountRole.PRIMARY ? -1 : 1;
+    }
+    return (
+      (a.secondaryOrder ?? Number.MAX_SAFE_INTEGER) - (b.secondaryOrder ?? Number.MAX_SAFE_INTEGER)
+    );
+  });
 
-  const dataSource = {
-    transaction: jest.fn(async <T>(cb: (manager: unknown) => Promise<T>): Promise<T> => {
-      const manager = {
-        createQueryBuilder: () => makeQueryBuilder(db),
-        delete: jest.fn(async () => ({ affected: 1 })),
-      };
-      const result = db.lock.then(() => cb(manager));
-      db.lock = result.then(
-        () => undefined,
-        () => undefined,
+const createAccountRepo = (db: FakeDb) =>
+  ({
+    find: jest.fn(async ({ where }: { where?: Partial<FakeAccount> } = {}) =>
+      db.accounts
+        .filter((account) => {
+          if (!where) return true;
+          return Object.entries(where).every(
+            ([key, value]) => account[key as keyof FakeAccount] === value,
+          );
+        })
+        .map((account) => clone(account)),
+    ),
+    findOne: jest.fn(async ({ where }: { where: Partial<FakeAccount> }) => {
+      const row = db.accounts.find((account) =>
+        Object.entries(where).every(
+          ([key, value]) => account[key as keyof FakeAccount] === value,
+        ),
       );
-      return result;
+      return row ? clone(row) : null;
     }),
+    save: jest.fn(async (input: CloudinaryAccount | CloudinaryAccount[]) => {
+      const rows = Array.isArray(input) ? input : [input];
+      for (const row of rows as unknown as FakeAccount[]) {
+        const index = db.accounts.findIndex((account) => account.id === row.id);
+        if (index >= 0) db.accounts[index] = clone(row);
+      }
+      return input;
+    }),
+  }) as unknown as Repository<CloudinaryAccount>;
+
+const createMediaRepo = (db: FakeDb) =>
+  ({
+    create: jest.fn((input: Partial<Media>) => input as Media),
+    findOne: jest.fn(async ({ where }: { where: Partial<FakeMedia> }) => {
+      const row = db.media.find((media) =>
+        Object.entries(where).every(([key, value]) => media[key as keyof FakeMedia] === value),
+      );
+      return row ? clone(row) : null;
+    }),
+    save: jest.fn(async (input: Media | Media[]) => {
+      const rows = Array.isArray(input) ? input : [input];
+      const saved = rows.map((row) => {
+        const cast = row as unknown as FakeMedia;
+        const next: FakeMedia = {
+          ...cast,
+          createdAt: cast.createdAt ?? new Date('2026-01-01T00:00:00.000Z'),
+          updatedAt: cast.updatedAt ?? new Date('2026-01-01T00:00:00.000Z'),
+        };
+        const existingIndex = db.media.findIndex((media) => media.id === next.id);
+        if (existingIndex >= 0) {
+          db.media[existingIndex] = clone(next);
+        } else {
+          db.media.push(clone(next));
+        }
+        return clone(next) as unknown as Media;
+      });
+      return Array.isArray(input) ? saved : saved[0]!;
+    }),
+    delete: jest.fn(async ({ id }: { id: string }) => {
+      db.media = db.media.filter((media) => media.id !== id);
+      return { affected: 1 };
+    }),
+    createQueryBuilder: jest.fn(),
+  }) as unknown as Repository<Media>;
+
+const createMediaPartRepo = (db: FakeDb) =>
+  ({
+    create: jest.fn((input: Partial<MediaPart>) => input as MediaPart),
+    find: jest.fn(
+      async ({
+        where,
+        order,
+      }: {
+        where?: Partial<FakeMediaPart>;
+        order?: { partIndex?: 'ASC' | 'DESC' };
+      } = {}) => {
+        let rows = db.parts.filter((part) => {
+          if (!where) return true;
+          return Object.entries(where).every(
+            ([key, value]) => part[key as keyof FakeMediaPart] === value,
+          );
+        });
+        if (order?.partIndex) {
+          rows = [...rows].sort((a, b) =>
+            order.partIndex === 'ASC' ? a.partIndex - b.partIndex : b.partIndex - a.partIndex,
+          );
+        }
+        return rows.map((row) => clone(row));
+      },
+    ),
+    findOne: jest.fn(async ({ where }: { where: Partial<FakeMediaPart> }) => {
+      const row = db.parts.find((part) =>
+        Object.entries(where).every(([key, value]) => part[key as keyof FakeMediaPart] === value),
+      );
+      return row ? clone(row) : null;
+    }),
+    save: jest.fn(async (input: MediaPart | MediaPart[]) => {
+      const rows = Array.isArray(input) ? input : [input];
+      const saved = rows.map((row) => {
+        const cast = row as unknown as FakeMediaPart;
+        const next: FakeMediaPart = {
+          ...cast,
+          id: cast.id ?? `part-${db.parts.length + 1}`,
+          createdAt: cast.createdAt ?? new Date('2026-01-01T00:00:00.000Z'),
+        };
+        const existingIndex = db.parts.findIndex(
+          (part) => part.mediaId === next.mediaId && part.partIndex === next.partIndex,
+        );
+        if (existingIndex >= 0) {
+          db.parts[existingIndex] = clone(next);
+        } else {
+          db.parts.push(clone(next));
+        }
+        return clone(next) as unknown as MediaPart;
+      });
+      return Array.isArray(input) ? saved : saved[0]!;
+    }),
+    delete: jest.fn(async ({ mediaId }: { mediaId: string }) => {
+      db.parts = db.parts.filter((part) => part.mediaId !== mediaId);
+      return { affected: 1 };
+    }),
+  }) as unknown as Repository<MediaPart>;
+
+const createManager = (db: FakeDb) => ({
+  createQueryBuilder: jest.fn(() => {
+    let filterUserId: string | undefined;
+    const qb: {
+      setLock: jest.Mock;
+      where: jest.Mock;
+      andWhere: jest.Mock;
+      orderBy: jest.Mock;
+      addOrderBy: jest.Mock;
+      getMany: jest.Mock;
+    } = {
+      setLock: jest.fn(() => qb),
+      where: jest.fn((_sql: string, params?: { userId?: string }) => {
+        filterUserId = params?.userId;
+        return qb;
+      }),
+      andWhere: jest.fn(() => qb),
+      orderBy: jest.fn(() => qb),
+      addOrderBy: jest.fn(() => qb),
+      getMany: jest.fn(async () =>
+        sortAccounts(
+          db.accounts.filter(
+            (account) => account.isActive && (!filterUserId || account.userId === filterUserId),
+          ),
+        ).map((account) => clone(account)),
+      ),
+    };
+    return qb;
+  }),
+  getRepository: jest.fn((entity: unknown) => {
+    if (entity === CloudinaryAccount) return createAccountRepo(db);
+    if (entity === Media) return createMediaRepo(db);
+    if (entity === MediaPart) return createMediaPartRepo(db);
+    throw new Error('Unsupported repository');
+  }),
+});
+
+const makeService = (seed?: Partial<FakeDb>) => {
+  const db: FakeDb = {
+    accounts: seed?.accounts ? clone(seed.accounts) : [],
+    media: seed?.media ? clone(seed.media) : [],
+    parts: seed?.parts ? clone(seed.parts) : [],
+  };
+
+  const mediaRepo = createMediaRepo(db);
+  const mediaPartRepo = createMediaPartRepo(db);
+  const accountRepo = createAccountRepo(db);
+  const dataSource = {
+    transaction: jest.fn(
+      async <T>(cb: (manager: ReturnType<typeof createManager>) => Promise<T>): Promise<T> =>
+        cb(createManager(db)),
+    ),
   } as unknown as DataSource;
-
-  const aesGcm = {
-    decrypt: jest.fn(() => 'decrypted-secret'),
-  } as unknown as AesGcmService;
-
+  const aesGcm = { decrypt: jest.fn(() => 'decrypted-secret') } as unknown as AesGcmService;
   const uploader = {
-    upload: jest.fn(async () => ({
-      publicId: 'vaultchat/user/abc123',
-      url: 'https://res.cloudinary.com/demo/image/upload/abc123.jpg',
-      bytes: 1024,
-      width: 800,
-      height: 600,
-      durationSeconds: null,
-      resourceType: 'image',
+    signUploadParams: jest.fn((_creds: unknown, params: Record<string, string>) => ({
+      signature: `sig:${params.public_id ?? 'unknown'}`,
+      timestamp: 1717171717,
     })),
+    buildDeliveryUrl: jest.fn(
+      (cloudName: string, resourceType: string, publicId: string) =>
+        `https://res.cloudinary.com/${cloudName}/${resourceType}/upload/${publicId}`,
+    ),
     destroy: jest.fn(async () => true),
   } as unknown as CloudinaryUploaderService;
-
-  const magicBytes = {
-    detect: jest.fn(async () => ({ ext: 'jpg', mime: 'image/jpeg' })),
-  } as unknown as MagicByteValidator;
 
   const service = new MediaService(
     mediaRepo,
@@ -167,249 +274,205 @@ const makeService = (accounts: FakeAccount[]) => {
     dataSource,
     aesGcm,
     uploader,
-    magicBytes,
   );
 
-  return { service, db, uploader, magicBytes, aesGcm, savedRows };
+  return { service, db, uploader };
 };
 
-/** Convenience account factories (sizes expressed in GiB). */
-const primary = (usedGiB: number, limitGiB = 25): FakeAccount => ({
-  id: 'primary',
+const account = (
+  id: string,
+  role: CloudinaryAccountRole,
+  usedMb: number,
+  limitMb: number,
+  secondaryOrder: number | null,
+): FakeAccount => ({
+  id,
   userId: 'user-1',
-  role: CloudinaryAccountRole.PRIMARY,
-  secondaryOrder: null,
-  storageUsedBytes: (BigInt(usedGiB) * GiB).toString(),
-  storageLimitBytes: (BigInt(limitGiB) * GiB).toString(),
+  role,
+  secondaryOrder,
+  storageUsedBytes: String(usedMb * MB),
+  storageLimitBytes: String(limitMb * MB),
   isActive: true,
-  cloudName: 'cloud-primary',
-  apiKey: 'key-primary',
-  apiSecretEncrypted: 'enc-primary',
+  cloudName: `cloud-${id}`,
+  apiKey: `key-${id}`,
+  apiSecretEncrypted: `enc-${id}`,
 });
 
-const secondary = (order: 1 | 2, usedGiB: number, limitGiB = 25): FakeAccount => ({
-  id: `secondary-${order}`,
-  userId: 'user-1',
-  role: CloudinaryAccountRole.SECONDARY,
-  secondaryOrder: order,
-  storageUsedBytes: (BigInt(usedGiB) * GiB).toString(),
-  storageLimitBytes: (BigInt(limitGiB) * GiB).toString(),
-  isActive: true,
-  cloudName: `cloud-secondary-${order}`,
-  apiKey: `key-secondary-${order}`,
-  apiSecretEncrypted: `enc-secondary-${order}`,
+const uploadingMedia = (overrides?: Partial<FakeMedia>): FakeMedia => ({
+  id: '11111111-1111-4111-8111-111111111111',
+  ownerId: 'user-1',
+  cloudinaryAccountId: 'primary',
+  storageSpaceId: null,
+  cloudinaryPublicId: 'vaultchat/user-1/11111111-1111-4111-8111-111111111111__part_0',
+  url: 'https://res.cloudinary.com/cloud-primary/image/upload/vaultchat/user-1/11111111-1111-4111-8111-111111111111__part_0',
+  mimeType: 'image/jpeg',
+  sizeBytes: String(8 * MB),
+  width: null,
+  height: null,
+  durationSeconds: null,
+  isOrphaned: false,
+  isMultipart: true,
+  totalParts: 3,
+  uploadStatus: MediaUploadStatus.UPLOADING,
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+  ...overrides,
 });
 
-/** Builds a fake uploaded JPEG of `sizeBytes`. */
-const jpegFile = (sizeBytes: number): UploadedFile => ({
-  originalname: 'photo.jpg',
-  mimetype: 'image/jpeg',
-  size: sizeBytes,
-  buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
-});
-
-/** 1 MB in bytes. */
-const MB = 1024 * 1024;
-
-/**
- * Byte-scale account factories for the upload-path tests. The real upload caps
- * files at 100 MB (PRD §6.1), so these tests use MB-sized capacities — small
- * enough that a ≤ 100 MB file can fill or overflow a slot, exercising the same
- * selector branches as the GiB-scale worked examples.
- */
-const primaryMb = (usedMb: number, limitMb: number): FakeAccount => ({
-  ...primary(0),
-  storageUsedBytes: (usedMb * MB).toString(),
-  storageLimitBytes: (limitMb * MB).toString(),
-});
-
-const secondaryMb = (order: 1 | 2, usedMb: number, limitMb: number): FakeAccount => ({
-  ...secondary(order, 0),
-  storageUsedBytes: (usedMb * MB).toString(),
-  storageLimitBytes: (limitMb * MB).toString(),
-});
-
-describe('MediaService', () => {
-  describe('preflight', () => {
-    it('returns canUpload + target account when the Primary has room', async () => {
-      const { service } = makeService([primary(10), secondary(1, 0)]);
-
-      const result = await service.preflight('user-1', 2 * 1024 ** 3, 'image/jpeg');
-
-      expect(result.canUpload).toBe(true);
-      expect(result.targetAccountId).toBe('primary');
-      expect(result.targetAccountRole).toBe(CloudinaryAccountRole.PRIMARY);
-      expect(result.vaultFreeBytes).toBe((40n * GiB).toString());
+describe('MediaService direct upload contract', () => {
+  it('returns preflight success with cloudName and uploadFolder', async () => {
+    const { service } = makeService({
+      accounts: [
+        account('primary', CloudinaryAccountRole.PRIMARY, 10, 100, null),
+        account('secondary-1', CloudinaryAccountRole.SECONDARY, 0, 100, 1),
+      ],
     });
 
-    it('rejects an unsupported MIME type with 415', async () => {
-      const { service } = makeService([primary(0)]);
+    const result = await service.preflight('user-1', 2 * MB, 'image/jpeg');
 
-      await expect(service.preflight('user-1', 1024, 'application/pdf')).rejects.toBeInstanceOf(
-        UnsupportedMediaTypeException,
-      );
-    });
-
-    it('reports VAULT_FULL without consuming quota', async () => {
-      const accounts = [primary(25), secondary(1, 25)];
-      const { service, db } = makeService(accounts);
-
-      const result = await service.preflight('user-1', 1024, 'image/jpeg');
-
-      expect(result.canUpload).toBe(false);
-      expect(result.reason).toBe(PreflightRejectReason.VAULT_FULL);
-      // Quota untouched.
-      expect(db.accounts[0]!.storageUsedBytes).toBe((25n * GiB).toString());
+    expect(result).toMatchObject({
+      canUpload: true,
+      cloudName: 'cloud-primary',
+      uploadFolder: 'vaultchat/user-1',
+      targetAccountId: 'primary',
+      targetAccountRole: CloudinaryAccountRole.PRIMARY,
     });
   });
 
-  describe('upload — happy path', () => {
-    it('reserves quota, uploads, and persists the media row', async () => {
-      // Primary: 10 MB used of 100 MB.
-      const { service, db, uploader, savedRows } = makeService([primaryMb(10, 100)]);
-
-      const dto = await service.upload('user-1', jpegFile(1 * MB));
-
-      expect(uploader.upload).toHaveBeenCalledTimes(1);
-      expect(dto.id).toBe('media-1');
-      expect(dto.ownerId).toBe('user-1');
-      expect(dto.mimeType).toBe('image/jpeg');
-      // Primary went from 10 MB → 11 MB used.
-      expect(db.accounts[0]!.storageUsedBytes).toBe((11 * MB).toString());
-      // Never leaks the account id to the client surface.
-      expect(savedRows[0]!.cloudinaryAccountId).toBe('primary');
-      expect(dto).not.toHaveProperty('cloudinaryAccountId');
+  it('reserves totalFileSize and creates an uploading media row on direct-upload-init', async () => {
+    const { service, db, uploader } = makeService({
+      accounts: [account('primary', CloudinaryAccountRole.PRIMARY, 10, 100, null)],
     });
 
-    it('routes to Secondary-1 when the Primary is full', async () => {
-      // Primary full (100/100 MB); Secondary-1 at 3/100 MB.
-      const { service, db } = makeService([primaryMb(100, 100), secondaryMb(1, 3, 100)]);
-
-      const dto = await service.upload('user-1', jpegFile(4 * MB));
-
-      expect(dto.id).toBe('media-1');
-      // Primary untouched, Secondary-1 incremented 3 MB → 7 MB.
-      expect(db.accounts[0]!.storageUsedBytes).toBe((100 * MB).toString());
-      expect(db.accounts[1]!.storageUsedBytes).toBe((7 * MB).toString());
-    });
-  });
-
-  describe('upload — rejections', () => {
-    it('rejects oversized files with 413 before touching Cloudinary', async () => {
-      const { service, uploader } = makeService([primary(0)]);
-      const tooBig = 101 * 1024 * 1024; // 101 MB > 100 MB cap
-
-      await expect(service.upload('user-1', jpegFile(tooBig))).rejects.toBeInstanceOf(
-        PayloadTooLargeException,
-      );
-      expect(uploader.upload).not.toHaveBeenCalled();
+    const result = await service.directUploadInit('user-1', {
+      mediaId: '11111111-1111-4111-8111-111111111111',
+      totalFileSize: 8 * MB,
+      totalParts: 3,
+      mimeType: 'image/jpeg',
     });
 
-    it('rejects a disallowed declared MIME type with 415', async () => {
-      const { service, uploader } = makeService([primary(0)]);
-      const file: UploadedFile = {
-        originalname: 'doc.pdf',
-        mimetype: 'application/pdf',
-        size: 1024,
-        buffer: Buffer.from([0x25, 0x50, 0x44, 0x46]),
-      };
-
-      await expect(service.upload('user-1', file)).rejects.toBeInstanceOf(
-        UnsupportedMediaTypeException,
-      );
-      expect(uploader.upload).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      uploadId: '11111111-1111-4111-8111-111111111111',
+      cloudName: 'cloud-primary',
+      apiKey: 'key-primary',
+      signature: 'sig:11111111-1111-4111-8111-111111111111__part_0',
+      folder: 'vaultchat/user-1',
+      publicIdPattern: '11111111-1111-4111-8111-111111111111__part_{partIndex}',
     });
-
-    it('rejects when magic bytes do not match the declared type (415)', async () => {
-      const { service, magicBytes, uploader } = makeService([primary(0)]);
-      // Declared image/jpeg, but content sniffs as a video.
-      (magicBytes.detect as jest.Mock).mockResolvedValueOnce({
-        ext: 'mp4',
-        mime: 'video/mp4',
-      });
-
-      await expect(service.upload('user-1', jpegFile(1024))).rejects.toBeInstanceOf(
-        UnsupportedMediaTypeException,
-      );
-      expect(uploader.upload).not.toHaveBeenCalled();
-    });
-
-    it('rejects with 507 VAULT_FULL when the Vault has no room', async () => {
-      const { service, uploader } = makeService([primaryMb(100, 100), secondaryMb(1, 100, 100)]);
-
-      const error = await service.upload('user-1', jpegFile(1 * MB)).catch((e) => e);
-
-      expect(error).toBeInstanceOf(HttpException);
-      expect(error.getStatus()).toBe(HttpStatus.INSUFFICIENT_STORAGE);
-      expect(error.getResponse().reason).toBe(PreflightRejectReason.VAULT_FULL);
-      expect(uploader.upload).not.toHaveBeenCalled();
-    });
-
-    it('rejects with 507 FILE_TOO_LARGE_FOR_ANY_ACCOUNT when no single slot fits', async () => {
-      // Aggregate free = 5+3+2 = 10 MB, but largest slot = 5 MB < 8 MB file.
-      const { service, uploader } = makeService([
-        primaryMb(95, 100),
-        secondaryMb(1, 97, 100),
-        secondaryMb(2, 98, 100),
-      ]);
-
-      const error = await service.upload('user-1', jpegFile(8 * MB)).catch((e) => e);
-
-      expect(error).toBeInstanceOf(HttpException);
-      expect(error.getStatus()).toBe(HttpStatus.INSUFFICIENT_STORAGE);
-      expect(error.getResponse().reason).toBe(PreflightRejectReason.FILE_TOO_LARGE_FOR_ANY_ACCOUNT);
-      expect(uploader.upload).not.toHaveBeenCalled();
-    });
-
-    it('rolls back the reservation when the Cloudinary upload fails', async () => {
-      const { service, db, uploader } = makeService([primaryMb(10, 100)]);
-      (uploader.upload as jest.Mock).mockRejectedValueOnce(new Error('cloudinary down'));
-
-      await expect(service.upload('user-1', jpegFile(1 * MB))).rejects.toBeInstanceOf(
-        HttpException,
-      );
-
-      // Reserved 1 MB then compensated back to the original 10 MB.
-      expect(db.accounts[0]!.storageUsedBytes).toBe((10 * MB).toString());
+    expect((uploader.signUploadParams as jest.Mock)).toHaveBeenCalledTimes(1);
+    expect(db.accounts[0]!.storageUsedBytes).toBe(String(18 * MB));
+    expect(db.media[0]).toMatchObject({
+      id: '11111111-1111-4111-8111-111111111111',
+      uploadStatus: MediaUploadStatus.UPLOADING,
+      sizeBytes: String(8 * MB),
+      totalParts: 3,
+      cloudinaryAccountId: 'primary',
     });
   });
 
-  describe('upload — concurrency (row-lock prevents overfill)', () => {
-    it('does not overfill a single account under N parallel uploads', async () => {
-      // Primary holds exactly 10 one-byte files; no secondary.
-      const tinyPrimary: FakeAccount = {
-        ...primary(0),
-        storageUsedBytes: '0',
-        storageLimitBytes: '10',
-      };
-      const { service, db } = makeService([tinyPrimary]);
-
-      const oneByteFile = (): UploadedFile => ({
-        originalname: 'x.jpg',
-        mimetype: 'image/jpeg',
-        size: 1,
-        buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
-      });
-
-      const attempts = 25;
-      const results = await Promise.allSettled(
-        Array.from({ length: attempts }, () => service.upload('user-1', oneByteFile())),
-      );
-
-      const fulfilled = results.filter((r) => r.status === 'fulfilled');
-      const rejected = results.filter((r) => r.status === 'rejected');
-
-      // Exactly the capacity (10) succeed; the rest are rejected with 507.
-      expect(fulfilled).toHaveLength(10);
-      expect(rejected).toHaveLength(attempts - 10);
-      for (const r of rejected as PromiseRejectedResult[]) {
-        expect(r.reason).toBeInstanceOf(HttpException);
-        expect(r.reason.getStatus()).toBe(HttpStatus.INSUFFICIENT_STORAGE);
-      }
-
-      // The account is filled exactly to its limit — never beyond.
-      expect(BigInt(db.accounts[0]!.storageUsedBytes)).toBeLessThanOrEqual(10n);
-      expect(db.accounts[0]!.storageUsedBytes).toBe('10');
+  it('rejects direct-upload-init when the file cannot fit any single account', async () => {
+    const { service, db } = makeService({
+      accounts: [
+        account('primary', CloudinaryAccountRole.PRIMARY, 95, 100, null),
+        account('secondary-1', CloudinaryAccountRole.SECONDARY, 97, 100, 1),
+        account('secondary-2', CloudinaryAccountRole.SECONDARY, 98, 100, 2),
+      ],
     });
+
+    const error = await service
+      .directUploadInit('user-1', {
+        mediaId: '22222222-2222-4222-8222-222222222222',
+        totalFileSize: 8 * MB,
+        totalParts: 2,
+        mimeType: 'image/jpeg',
+      })
+      .catch((err) => err);
+
+    expect(error).toBeInstanceOf(HttpException);
+    expect(error.getStatus()).toBe(HttpStatus.INSUFFICIENT_STORAGE);
+    expect(error.getResponse().reason).toBe(PreflightRejectReason.FILE_TOO_LARGE_FOR_ANY_ACCOUNT);
+    expect(db.media).toHaveLength(0);
+  });
+
+  it('only signs additional parts for uploading media', async () => {
+    const { service } = makeService({
+      accounts: [account('primary', CloudinaryAccountRole.PRIMARY, 18, 100, null)],
+      media: [uploadingMedia({ uploadStatus: MediaUploadStatus.READY })],
+    });
+
+    await expect(
+      service.directUploadSignPart('user-1', {
+        mediaId: '11111111-1111-4111-8111-111111111111',
+        partIndex: 1,
+        totalParts: 3,
+      }),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('persists media_parts and adjusts reserved bytes on direct-upload-complete', async () => {
+    const { service, db, uploader } = makeService({
+      accounts: [account('primary', CloudinaryAccountRole.PRIMARY, 18, 100, null)],
+      media: [uploadingMedia()],
+    });
+
+    const result = await service.directUploadComplete('user-1', {
+      mediaId: '11111111-1111-4111-8111-111111111111',
+      parts: [
+        { partIndex: 0, publicId: 'vaultchat/user-1/part-0', sizeBytes: 2 * MB },
+        { partIndex: 1, publicId: 'vaultchat/user-1/part-1', sizeBytes: 2 * MB },
+        { partIndex: 2, publicId: 'vaultchat/user-1/part-2', sizeBytes: 2 * MB },
+      ],
+      compressedTotalBytes: 6 * MB,
+    });
+
+    expect(result.sizeBytes).toBe(String(6 * MB));
+    expect(db.media[0]).toMatchObject({
+      uploadStatus: MediaUploadStatus.READY,
+      sizeBytes: String(6 * MB),
+      isMultipart: true,
+      cloudinaryPublicId: 'vaultchat/user-1/part-0',
+    });
+    expect(db.parts).toHaveLength(3);
+    expect(db.accounts[0]!.storageUsedBytes).toBe(String(16 * MB));
+    expect((uploader.buildDeliveryUrl as jest.Mock)).toHaveBeenCalledWith(
+      'cloud-primary',
+      'image',
+      'vaultchat/user-1/part-0',
+    );
+  });
+
+  it('rolls back the reservation and deletes uploaded parts on direct-upload-abort', async () => {
+    const { service, db, uploader } = makeService({
+      accounts: [account('primary', CloudinaryAccountRole.PRIMARY, 18, 100, null)],
+      media: [uploadingMedia()],
+      parts: [
+        {
+          id: 'part-existing',
+          mediaId: '11111111-1111-4111-8111-111111111111',
+          partIndex: 0,
+          totalParts: 3,
+          cloudinaryPublicId: 'vaultchat/user-1/part-0',
+          cloudName: 'cloud-primary',
+          sizeBytes: String(2 * MB),
+          cloudinaryAccountId: 'primary',
+          mimeType: 'image/jpeg',
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const result = await service.directUploadAbort('user-1', {
+      mediaId: '11111111-1111-4111-8111-111111111111',
+      uploadedParts: [
+        { publicId: 'vaultchat/user-1/part-0' },
+        { publicId: 'vaultchat/user-1/part-1' },
+      ],
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(db.accounts[0]!.storageUsedBytes).toBe(String(10 * MB));
+    expect(db.media[0]!.uploadStatus).toBe(MediaUploadStatus.FAILED);
+    expect(db.parts).toHaveLength(0);
+    expect((uploader.destroy as jest.Mock)).toHaveBeenCalledTimes(2);
   });
 });

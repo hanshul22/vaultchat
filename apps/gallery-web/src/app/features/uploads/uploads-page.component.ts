@@ -1,4 +1,4 @@
-import {
+﻿import {
   ChangeDetectionStrategy,
   Component,
   ElementRef,
@@ -19,8 +19,12 @@ import {
   VideoProbeResult,
   MAX_VIDEO_HEIGHT_PX,
   VIDEO_CRF,
-  MAX_CHUNK_BYTES,
 } from '../../core/models/video-processing.model';
+import {
+  UploadQueueService,
+  DIRECT_UPLOAD_MAX_CHUNK_SIZE_BYTES,
+} from '../../uploads/data/upload-queue.service';
+import { UploadTaskPartInput } from '../../uploads/data/upload-task.model';
 
 const ALLOWED_MIME_TYPES = [
   'image/jpeg',
@@ -62,863 +66,53 @@ function formatDuration(seconds: number | null): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function uploadErrorMessage(err: HttpErrorResponse, mimeType: string): string {
-  const body = err.error as { reason?: string; message?: string } | null;
-  switch (err.status) {
-    case 413:
-      return `File exceeds the server's 100 MB limit.`;
-    case 415:
-      return `Unsupported media type. The server rejected "${mimeType}".`;
-    case 507:
-      return preflightReasonMessage(body?.reason as PreflightRejectReason | undefined);
-    case 400:
-      return body?.message ?? 'Invalid request. Check the file size and type.';
-    case 401:
-      return 'Session expired. Please refresh the page and sign in again.';
-    case 502:
-    case 504:
-      return 'Upload to Cloudinary failed. Please try again.';
-    default:
-      return 'Upload failed. Please try again.';
-  }
-}
-
 /**
- * /uploads — upload queue with preflight validation and direct upload execution.
+ * /uploads — upload queue with preflight validation and direct Cloudinary upload execution.
  *
  * State machine per file:
- *   video:  selected → probing → probed → checking → ready → uploading → uploaded
+ *   video:  selected → probing → probed → processing → processed → checking → ready
+ *              → splitting? → uploading → uploaded
  *   image:  selected → checking → ready → uploading → uploaded
  *   either: any → uploadError (retryable)
  *
- * VideoProcessingService probes video files automatically on selection to
- * surface resolution, duration, and whether downscaling will be needed.
- * Actual transcoding (H.264 CRF 18, 1080p downscale) is wired in the next step.
+ * After preflight passes, video files are compressed with ffmpeg.wasm (H.264 CRF 18,
+ * 1080p max, browser-side only). The processed output — or original file for images —
+ * is then passed to UploadQueueService.executeDirectUpload(), which handles:
+ *   preflight → direct-upload-init → per-part Cloudinary uploads → direct-upload-complete
+ *
+ * Files larger than 95 MB after processing are split into sequential ≤95 MB parts
+ * before being handed to the queue service. All parts of one media item share a
+ * single upload session.
+ *
+ * Upload progress stages shown in the UI:
+ *   checking   → Checking vault…
+ *   processing → Transcoding… (ratio%)
+ *   splitting  → Splitting into N parts…
+ *   uploading  → Uploading to your Vault…  /  Uploading part N of M…
+ *   finalizing → Finalizing…
+ *   uploaded   → ✓ Uploaded successfully
  */
 @Component({
   selector: 'app-uploads-page',
   standalone: true,
   imports: [DatePipe, DecimalPipe, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  template: `
-    <div class="uploads-page">
-      <!-- ── Header ─────────────────────────────────────────────────────── -->
-      <header class="uploads-page__header">
-        <h1 class="uploads-page__title">Uploads</h1>
-        <p class="uploads-page__subtitle">
-          Select images or videos to add to your Vault. Each file is checked against your available
-          storage before uploading.
-        </p>
-      </header>
-
-      <!-- ── Drop zone ──────────────────────────────────────────────────── -->
-      <div
-        class="drop-zone"
-        [class.drop-zone--active]="isDragging()"
-        role="button"
-        tabindex="0"
-        aria-label="Drop files here or click to browse"
-        (click)="openFilePicker()"
-        (keydown.enter)="openFilePicker()"
-        (keydown.space)="openFilePicker()"
-        (dragover)="onDragOver($event)"
-        (dragleave)="onDragLeave()"
-        (drop)="onDrop($event)"
-      >
-        <span class="drop-zone__icon" aria-hidden="true">📂</span>
-        <p class="drop-zone__primary">
-          Drop images or videos here, or
-          <span class="drop-zone__browse">click to browse</span>
-        </p>
-        <p class="drop-zone__secondary">
-          Supported: JPEG, PNG, WebP, GIF, MP4, QuickTime · Max 100 MB per file
-        </p>
-      </div>
-
-      <!-- Hidden file input -->
-      <input
-        #fileInput
-        type="file"
-        [accept]="fileInputAccept"
-        multiple
-        class="uploads-page__file-input"
-        aria-hidden="true"
-        tabindex="-1"
-        (change)="onFileInputChange($event)"
-      />
-
-      <!-- ── ffmpeg status banner (shown only when video files are queued) ── -->
-      @if (hasVideoItems()) {
-        <div
-          class="ffmpeg-banner"
-          [attr.data-state]="ffmpegState()"
-          role="status"
-          aria-live="polite"
-        >
-          @switch (ffmpegState()) {
-            @case ('idle') {
-              <span class="ffmpeg-banner__icon">🎬</span>
-              <span>
-                Video processing engine (ffmpeg.wasm) will load automatically when a video is
-                queued.
-              </span>
-            }
-            @case ('loading') {
-              <span class="ffmpeg-banner__spinner" aria-hidden="true"></span>
-              <span>Loading video processing engine…</span>
-            }
-            @case ('ready') {
-              <span class="ffmpeg-banner__icon">✅</span>
-              <span>Video processing engine ready.</span>
-            }
-            @case ('failed') {
-              <span class="ffmpeg-banner__icon">⚠️</span>
-              <span>
-                Video processing engine unavailable — videos will be uploaded without compression.
-              </span>
-            }
-          }
-        </div>
-      }
-
-      <!-- ── Queue ───────────────────────────────────────────────────────── -->
-      @if (queue().length > 0) {
-        <section class="queue" aria-label="Upload queue">
-          <!-- Queue header + bulk actions -->
-          <div class="queue__header">
-            <h2 class="queue__title">
-              Queue
-              <span class="queue__badge">{{ queue().length }}</span>
-            </h2>
-
-            <div class="queue__actions">
-              @if (hasPendingItems()) {
-                <button
-                  type="button"
-                  class="btn btn--ghost"
-                  [disabled]="isBusy()"
-                  (click)="runPreflightAll()"
-                >
-                  @if (isCheckingAny()) {
-                    Checking…
-                  } @else {
-                    Check all
-                  }
-                </button>
-              }
-
-              @if (hasReadyItems()) {
-                <button
-                  type="button"
-                  class="btn btn--primary"
-                  [disabled]="isBusy()"
-                  (click)="uploadAll()"
-                >
-                  @if (isUploadingAny()) {
-                    Uploading…
-                  } @else {
-                    Upload {{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }}
-                  }
-                </button>
-              }
-
-              <button
-                type="button"
-                class="btn btn--ghost"
-                [disabled]="isBusy()"
-                (click)="clearQueue()"
-              >
-                Clear all
-              </button>
-            </div>
-          </div>
-
-          <!-- File list -->
-          <ul class="queue__list" aria-label="Files in queue">
-            @for (item of queue(); track item.clientId) {
-              <li class="queue-item" [attr.data-status]="item.status">
-                <!-- Status icon -->
-                <span class="queue-item__icon" aria-hidden="true">
-                  @switch (item.status) {
-                    @case ('probing') {
-                      <span class="queue-item__spinner queue-item__spinner--probe"></span>
-                    }
-                    @case ('checking') {
-                      <span class="queue-item__spinner"></span>
-                    }
-                    @case ('uploading') {
-                      <span class="queue-item__spinner queue-item__spinner--upload"></span>
-                    }
-                    @case ('processing') {
-                      <span class="queue-item__spinner queue-item__spinner--process"></span>
-                    }
-                    @case ('splitting') {
-                      <span class="queue-item__spinner queue-item__spinner--process"></span>
-                    }
-                    @case ('probed') {
-                      🎬
-                    }
-                    @case ('processed') {
-                      ✨
-                    }
-                    @case ('probeError') {
-                      ⚠️
-                    }
-                    @case ('processError') {
-                      ❌
-                    }
-                    @case ('ready') {
-                      ✅
-                    }
-                    @case ('uploaded') {
-                      🎉
-                    }
-                    @case ('uploadError') {
-                      ❌
-                    }
-                    @default {
-                      {{ mimeIcon(item.mimeType) }}
-                    }
-                  }
-                </span>
-
-                <!-- File info -->
-                <div class="queue-item__info">
-                  <p class="queue-item__name" [title]="item.filename">
-                    {{ item.filename }}
-                  </p>
-                  <p class="queue-item__meta">
-                    {{ formatBytes(item.sizeBytes) }} · {{ item.mimeType }}
-                  </p>
-
-                  @if (item.status === 'probing') {
-                    <p class="queue-item__status queue-item__status--info">Analysing video…</p>
-                  }
-
-                  @if (item.probeResult) {
-                    <p class="queue-item__status queue-item__status--probe">
-                      {{ item.probeResult.width }}×{{ item.probeResult.height }} ·
-                      {{ formatDuration(item.probeResult.durationSeconds) }}
-                      @if (item.probeResult.codec) {
-                        · {{ item.probeResult.codec }}
-                      }
-                      @if (item.probeResult.requiresDownscale) {
-                        ·
-                        <strong class="queue-item__downscale-warn">
-                          ⬇ will downscale to 1080p
-                        </strong>
-                      }
-                    </p>
-                  }
-
-                  @if (item.status === 'probeError' && item.probeErrorMessage) {
-                    <p class="queue-item__status queue-item__status--warn">
-                      ⚠ Probe failed: {{ item.probeErrorMessage }} — you can still upload.
-                    </p>
-                  }
-
-                  @if (item.status === 'processing') {
-                    <p class="queue-item__status queue-item__status--info">
-                      Transcoding…
-                      @if (item.processingProgress && item.processingProgress.ratio > 0) {
-                        {{ item.processingProgress.ratio * 100 | number: '1.0-0' }}%
-                      }
-                    </p>
-                  }
-
-                  @if (item.status === 'processed' && item.processedFile) {
-                    <p class="queue-item__status queue-item__status--ok">
-                      ✨ Processed — {{ formatBytes(item.processedFile.size) }}
-                      @if (item.probeResult) {
-                        (was {{ formatBytes(item.sizeBytes) }})
-                      }
-                    </p>
-                  }
-
-                  @if (item.status === 'processError' && item.processErrorMessage) {
-                    <p class="queue-item__status queue-item__status--err">
-                      Processing failed: {{ item.processErrorMessage }}
-                    </p>
-                  }
-
-                  @if (item.status === 'splitting') {
-                    <p class="queue-item__status queue-item__status--info">
-                      Splitting into {{ item.totalChunks }} chunks…
-                    </p>
-                  }
-
-                  @if (item.status === 'uploading' && item.totalChunks && item.totalChunks > 1) {
-                    <p class="queue-item__status queue-item__status--info">
-                      Uploading chunk
-                      {{ (item.currentChunkIndex ?? 0) + 1 }} of {{ item.totalChunks }}…
-                    </p>
-                  }
-
-                  @if (item.status === 'ready' && item.preflightResult) {
-                    <p class="queue-item__status queue-item__status--ok">✓ Ready to upload</p>
-                  }
-
-                  @if (item.status === 'uploading') {
-                    <p class="queue-item__status queue-item__status--info">
-                      Uploading to Cloudinary…
-                    </p>
-                  }
-
-                  @if (item.status === 'uploaded' && item.uploadedMedia) {
-                    <p class="queue-item__status queue-item__status--ok">✓ Uploaded successfully</p>
-                    <p class="queue-item__status queue-item__status--muted">
-                      ID: {{ item.uploadedMedia.id }} ·
-                      {{ item.uploadedMedia.createdAt | date: 'dd MMM yyyy, HH:mm' }}
-                    </p>
-                  }
-
-                  @if (item.status === 'uploadError' && item.errorMessage) {
-                    <p class="queue-item__status queue-item__status--err">
-                      {{ item.errorMessage }}
-                    </p>
-                  }
-                </div>
-
-                <!-- Per-item actions -->
-                <div class="queue-item__actions">
-                  @if (item.status === 'probed' && item.mimeType.startsWith('video/')) {
-                    <button
-                      type="button"
-                      class="btn btn--sm btn--primary"
-                      [disabled]="isBusy()"
-                      (click)="processOne(item.clientId)"
-                      [attr.aria-label]="'Process ' + item.filename"
-                    >
-                      Process
-                    </button>
-                  }
-
-                  @if (item.status === 'processError') {
-                    <button
-                      type="button"
-                      class="btn btn--sm btn--ghost"
-                      [disabled]="isBusy()"
-                      (click)="processOne(item.clientId)"
-                      [attr.aria-label]="'Retry processing ' + item.filename"
-                    >
-                      Retry
-                    </button>
-                  }
-
-                  @if (
-                    item.status === 'selected' ||
-                    item.status === 'probed' ||
-                    item.status === 'processed' ||
-                    item.status === 'probeError'
-                  ) {
-                    <button
-                      type="button"
-                      class="btn btn--sm btn--ghost"
-                      [disabled]="isBusy()"
-                      (click)="runPreflightOne(item.clientId)"
-                      [attr.aria-label]="'Check ' + item.filename"
-                    >
-                      Check
-                    </button>
-                  }
-
-                  @if (item.status === 'uploadError') {
-                    <button
-                      type="button"
-                      class="btn btn--sm btn--ghost"
-                      [disabled]="isBusy()"
-                      (click)="runPreflightOne(item.clientId)"
-                      [attr.aria-label]="'Retry check for ' + item.filename"
-                    >
-                      Re-check
-                    </button>
-                  }
-
-                  @if (item.status === 'ready') {
-                    <button
-                      type="button"
-                      class="btn btn--sm btn--primary"
-                      [disabled]="isBusy()"
-                      (click)="uploadOne(item.clientId)"
-                      [attr.aria-label]="'Upload ' + item.filename"
-                    >
-                      Upload
-                    </button>
-                  }
-
-                  @if (
-                    item.status !== 'probing' &&
-                    item.status !== 'processing' &&
-                    item.status !== 'splitting' &&
-                    item.status !== 'uploading' &&
-                    item.status !== 'checking'
-                  ) {
-                    <button
-                      type="button"
-                      class="btn btn--sm btn--danger-ghost"
-                      (click)="removeItem(item.clientId)"
-                      [attr.aria-label]="'Remove ' + item.filename"
-                    >
-                      Remove
-                    </button>
-                  }
-                </div>
-              </li>
-            }
-          </ul>
-
-          @if (uploadedCount() > 0) {
-            <div class="queue__notice queue__notice--success" role="status">
-              🎉
-              <strong>
-                {{ uploadedCount() }} file{{ uploadedCount() === 1 ? '' : 's' }} uploaded
-              </strong>
-              to your Vault. Visit the
-              <a routerLink="/gallery" class="queue__notice-link">Gallery</a>
-              to see them.
-            </div>
-          }
-
-          @if (hasReadyItems() && !isUploadingAny()) {
-            <div class="queue__notice" role="note">
-              <strong>
-                {{ readyCount() }} file{{ readyCount() === 1 ? '' : 's' }} ready to upload.
-              </strong>
-              Videos have been processed and checked. Click "Upload all" to send them to your Vault.
-            </div>
-          }
-        </section>
-      }
-    </div>
-  `,
-  styles: [
-    `
-      .uploads-page {
-        max-width: 720px;
-      }
-
-      .uploads-page__header {
-        margin-bottom: 1.5rem;
-      }
-
-      .uploads-page__title {
-        font-size: 1.5rem;
-        font-weight: 600;
-        margin: 0 0 0.375rem;
-      }
-
-      .uploads-page__subtitle {
-        font-size: 0.9rem;
-        color: #6b7280;
-        margin: 0;
-      }
-
-      .uploads-page__file-input {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        opacity: 0;
-        pointer-events: none;
-      }
-
-      .drop-zone {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 0.5rem;
-        padding: 2.5rem 1.5rem;
-        border: 2px dashed #d1d5db;
-        border-radius: 12px;
-        background: #f9fafb;
-        cursor: pointer;
-        transition:
-          border-color 150ms,
-          background 150ms;
-        text-align: center;
-        margin-bottom: 1.5rem;
-        user-select: none;
-      }
-
-      .drop-zone:hover,
-      .drop-zone:focus-visible {
-        border-color: #6366f1;
-        background: #eef2ff;
-        outline: none;
-      }
-
-      .drop-zone--active {
-        border-color: #6366f1;
-        background: #eef2ff;
-      }
-
-      .drop-zone__icon {
-        font-size: 2.5rem;
-        line-height: 1;
-      }
-
-      .drop-zone__primary {
-        font-size: 0.95rem;
-        color: #374151;
-        margin: 0;
-      }
-
-      .drop-zone__browse {
-        color: #6366f1;
-        font-weight: 500;
-        text-decoration: underline;
-      }
-
-      .drop-zone__secondary {
-        font-size: 0.8rem;
-        color: #9ca3af;
-        margin: 0;
-      }
-
-      .queue {
-        margin-top: 0.5rem;
-      }
-
-      .queue__header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 0.75rem;
-        flex-wrap: wrap;
-        gap: 0.5rem;
-      }
-
-      .queue__title {
-        font-size: 1rem;
-        font-weight: 600;
-        margin: 0;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-      }
-
-      .queue__badge {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 1.5rem;
-        height: 1.5rem;
-        padding: 0 0.4rem;
-        border-radius: 999px;
-        background: #e0e7ff;
-        color: #4338ca;
-        font-size: 0.75rem;
-        font-weight: 700;
-      }
-
-      .queue__actions {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-      }
-
-      .queue__list {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 0.375rem;
-      }
-
-      .queue-item {
-        display: flex;
-        align-items: flex-start;
-        gap: 0.75rem;
-        padding: 0.75rem 0.875rem;
-        border-radius: 8px;
-        border: 1px solid #e5e7eb;
-        background: #fff;
-        transition: border-color 150ms;
-      }
-
-      .queue-item[data-status='ready'] {
-        border-color: #bbf7d0;
-        background: #f0fdf4;
-      }
-      .queue-item[data-status='uploading'] {
-        border-color: #bfdbfe;
-        background: #eff6ff;
-      }
-      .queue-item[data-status='uploaded'] {
-        border-color: #6ee7b7;
-        background: #ecfdf5;
-      }
-      .queue-item[data-status='uploadError'] {
-        border-color: #fecaca;
-        background: #fef2f2;
-      }
-      .queue-item[data-status='checking'] {
-        border-color: #e0e7ff;
-        background: #f5f3ff;
-      }
-      .queue-item[data-status='probing'] {
-        border-color: #fde68a;
-        background: #fffbeb;
-      }
-      .queue-item[data-status='probed'] {
-        border-color: #a5f3fc;
-        background: #f0f9ff;
-      }
-      .queue-item[data-status='probeError'] {
-        border-color: #fde68a;
-        background: #fffbeb;
-      }
-      .queue-item[data-status='processing'] {
-        border-color: #c4b5fd;
-        background: #f5f3ff;
-      }
-      .queue-item[data-status='processed'] {
-        border-color: #6ee7b7;
-        background: #ecfdf5;
-      }
-      .queue-item[data-status='processError'] {
-        border-color: #fecaca;
-        background: #fef2f2;
-      }
-      .queue-item[data-status='splitting'] {
-        border-color: #c4b5fd;
-        background: #f5f3ff;
-      }
-
-      .queue-item__icon {
-        font-size: 1.25rem;
-        flex-shrink: 0;
-        line-height: 1.4;
-        min-width: 1.5rem;
-        text-align: center;
-      }
-
-      .queue-item__spinner {
-        display: inline-block;
-        width: 18px;
-        height: 18px;
-        border: 2px solid #e0e7ff;
-        border-top-color: #6366f1;
-        border-radius: 50%;
-        animation: spin 0.7s linear infinite;
-        vertical-align: middle;
-      }
-
-      .queue-item__spinner--upload {
-        border-color: #bfdbfe;
-        border-top-color: #2563eb;
-      }
-
-      .queue-item__spinner--probe {
-        border-color: #fde68a;
-        border-top-color: #d97706;
-      }
-
-      .queue-item__spinner--process {
-        border-color: #ddd6fe;
-        border-top-color: #7c3aed;
-      }
-
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
-
-      .queue-item__info {
-        flex: 1;
-        min-width: 0;
-      }
-
-      .queue-item__name {
-        font-size: 0.875rem;
-        font-weight: 500;
-        color: #111827;
-        margin: 0 0 0.15rem;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-
-      .queue-item__meta {
-        font-size: 0.75rem;
-        color: #6b7280;
-        margin: 0 0 0.2rem;
-      }
-
-      .queue-item__status {
-        font-size: 0.75rem;
-        margin: 0 0 0.1rem;
-      }
-
-      .queue-item__status--ok {
-        color: #15803d;
-      }
-      .queue-item__status--err {
-        color: #b91c1c;
-      }
-      .queue-item__status--info {
-        color: #1d4ed8;
-      }
-      .queue-item__status--muted {
-        color: #9ca3af;
-        font-size: 0.7rem;
-      }
-
-      .queue-item__status--probe {
-        color: #0369a1;
-      }
-
-      .queue-item__status--warn {
-        color: #92400e;
-      }
-
-      .queue-item__downscale-warn {
-        color: #b45309;
-        font-weight: 600;
-      }
-
-      .queue-item__actions {
-        display: flex;
-        gap: 0.375rem;
-        flex-shrink: 0;
-        align-items: flex-start;
-      }
-
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0.4rem 0.875rem;
-        border-radius: 6px;
-        font-size: 0.875rem;
-        font-weight: 500;
-        cursor: pointer;
-        border: 1px solid transparent;
-        transition:
-          background 150ms,
-          color 150ms,
-          border-color 150ms;
-        white-space: nowrap;
-      }
-
-      .btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      .btn--primary {
-        background: #6366f1;
-        color: #fff;
-        border-color: #6366f1;
-      }
-      .btn--primary:not(:disabled):hover {
-        background: #4f46e5;
-        border-color: #4f46e5;
-      }
-
-      .btn--ghost {
-        background: transparent;
-        color: #374151;
-        border-color: #d1d5db;
-      }
-      .btn--ghost:not(:disabled):hover {
-        background: #f3f4f6;
-      }
-
-      .btn--sm {
-        padding: 0.25rem 0.625rem;
-        font-size: 0.8rem;
-      }
-
-      .btn--danger-ghost {
-        background: transparent;
-        color: #b91c1c;
-        border-color: #fca5a5;
-      }
-      .btn--danger-ghost:not(:disabled):hover {
-        background: #fef2f2;
-      }
-
-      .queue__notice {
-        margin-top: 1rem;
-        padding: 0.875rem 1rem;
-        border-radius: 8px;
-        background: #eff6ff;
-        border: 1px solid #bfdbfe;
-        font-size: 0.85rem;
-        color: #1e40af;
-        line-height: 1.5;
-      }
-
-      .queue__notice--success {
-        background: #f0fdf4;
-        border-color: #86efac;
-        color: #15803d;
-      }
-
-      .queue__notice-link {
-        color: inherit;
-        font-weight: 600;
-        text-decoration: underline;
-      }
-
-      .ffmpeg-banner {
-        display: flex;
-        align-items: center;
-        gap: 0.625rem;
-        padding: 0.625rem 0.875rem;
-        border-radius: 8px;
-        border: 1px solid #e5e7eb;
-        background: #f9fafb;
-        font-size: 0.8rem;
-        color: #6b7280;
-        margin-bottom: 1rem;
-        line-height: 1.4;
-      }
-
-      .ffmpeg-banner[data-state='ready'] {
-        background: #f0fdf4;
-        border-color: #bbf7d0;
-        color: #15803d;
-      }
-
-      .ffmpeg-banner[data-state='loading'] {
-        background: #f5f3ff;
-        border-color: #e0e7ff;
-        color: #4338ca;
-      }
-
-      .ffmpeg-banner[data-state='failed'] {
-        background: #fffbeb;
-        border-color: #fde68a;
-        color: #92400e;
-      }
-
-      .ffmpeg-banner__icon {
-        font-size: 1rem;
-        flex-shrink: 0;
-      }
-
-      .ffmpeg-banner__spinner {
-        display: inline-block;
-        width: 14px;
-        height: 14px;
-        border: 2px solid #e0e7ff;
-        border-top-color: #6366f1;
-        border-radius: 50%;
-        animation: spin 0.7s linear infinite;
-        flex-shrink: 0;
-      }
-    `,
-  ],
+  templateUrl: './uploads-page.component.html',
+  styleUrl: './uploads-page.component.scss',
 })
 export class UploadsPageComponent {
   @ViewChild('fileInput') private fileInputRef!: ElementRef<HTMLInputElement>;
 
   private readonly uploadService = inject(UploadService);
   private readonly videoProcessing = inject(VideoProcessingService);
+  private readonly uploadQueue = inject(UploadQueueService);
+
+  /**
+   * Maps clientId from the local UploadQueueItem to the clientId of the
+   * corresponding UploadTask in UploadQueueService so we can call
+   * executeDirectUpload after processing.
+   */
+  private readonly taskClientIdMap = new Map<string, string>();
 
   readonly fileInputAccept = FILE_INPUT_ACCEPT;
   readonly queue = signal<UploadQueueItem[]>([]);
@@ -1040,39 +234,46 @@ export class UploadsPageComponent {
   }
 
   removeItem(clientId: string): void {
+    const taskClientId = this.taskClientIdMap.get(clientId);
+    if (taskClientId) {
+      this.uploadQueue.removeTask(taskClientId);
+      this.taskClientIdMap.delete(clientId);
+    }
     this.queue.update((q) => q.filter((i) => i.clientId !== clientId));
   }
 
   clearQueue(): void {
+    this.uploadQueue.clear();
+    this.taskClientIdMap.clear();
     this.queue.set([]);
   }
 
-  async probeOne(clientId: string): Promise<void> {
-    const item = this.queue().find((i) => i.clientId === clientId);
-    if (!item || !item.mimeType.startsWith('video/')) return;
-    if (item.status === 'probing' || item.status === 'uploading') return;
+async probeOne(clientId: string): Promise<void> {
+  const item = this.queue().find((i) => i.clientId === clientId);
+  if (!item || !item.mimeType.startsWith('video/')) return;
+  if (item.status === 'probing' || item.status === 'uploading') return;
 
+  this.patchItem(clientId, {
+    status: 'probing',
+    probeResult: null,
+    probeErrorMessage: undefined,
+  });
+
+  void this.videoProcessing.load().catch(() => undefined);
+
+  try {
+    const result = await this.videoProcessing.probeVideo(item.file);
+    this.patchItem(clientId, { status: 'probed', probeResult: result });
+    this.runPreflightOne(clientId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Could not read video metadata.';
     this.patchItem(clientId, {
-      status: 'probing',
-      probeResult: null,
-      probeErrorMessage: undefined,
+      status: 'probeError',
+      probeErrorMessage: message,
     });
-
-    await this.videoProcessing.load();
-
-    try {
-      const result = await this.videoProcessing.probeVideo(item.file);
-      this.patchItem(clientId, { status: 'probed', probeResult: result });
-      this.runPreflightOne(clientId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Could not read video metadata.';
-      this.patchItem(clientId, {
-        status: 'probeError',
-        probeErrorMessage: message,
-      });
-      this.runPreflightOne(clientId);
-    }
+    this.runPreflightOne(clientId);
   }
+}
 
   async processOne(clientId: string): Promise<void> {
     const item = this.queue().find((i) => i.clientId === clientId);
@@ -1099,7 +300,14 @@ export class UploadsPageComponent {
         file: item.file,
         maxHeightPx: MAX_VIDEO_HEIGHT_PX,
         crf: VIDEO_CRF,
+        // Pass the probe result we already have so processVideo never
+        // re-runs a potentially slow/hanging internal ffprobe call.
+        probe: item.probeResult ?? null,
       });
+
+      // Ensure the item hasn't been removed while we were processing.
+      const current = this.queue().find((i) => i.clientId === clientId);
+      if (!current) return;
 
       this.patchItem(clientId, {
         status: 'processed',
@@ -1107,13 +315,18 @@ export class UploadsPageComponent {
         processingProgress: null,
       });
 
-      const processed = this.queue().find((i) => i.clientId === clientId);
-      if (processed?.preflightResult) {
+      if (current.preflightResult) {
         this.patchItem(clientId, { status: 'ready' });
         void this.uploadOne(clientId);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Video processing failed.';
+      // Surface any error — including timeouts — as a visible processError so
+      // the queue never stays stuck in "Compressing…".
+      const raw = err instanceof Error ? err.message : 'Video processing failed.';
+      // Distinguish timeout messages for a friendlier UI label.
+      const message = raw.includes('timed out')
+        ? `Processing timed out: ${raw}`
+        : raw;
       this.patchItem(clientId, {
         status: 'processError',
         processErrorMessage: message,
@@ -1205,16 +418,34 @@ export class UploadsPageComponent {
     const item = this.queue().find((i) => i.clientId === clientId);
     if (!item || item.status !== 'ready') return;
 
+    const taskClientId = this.taskClientIdMap.get(clientId);
+    if (!taskClientId) {
+      this.patchItem(clientId, {
+        status: 'uploadError',
+        errorMessage: 'Upload task reference lost. Please remove and re-add the file.',
+      });
+      return;
+    }
+
     const fileToUpload = item.processedFile ?? item.file;
 
-    if (fileToUpload.size > MAX_CHUNK_BYTES) {
-      await this.uploadChunked(clientId, fileToUpload);
+    if (fileToUpload.size > DIRECT_UPLOAD_MAX_CHUNK_SIZE_BYTES) {
+      await this.uploadChunked(clientId, taskClientId, fileToUpload);
     } else {
-      this.uploadDirect(clientId, fileToUpload);
+      await this.uploadSinglePart(clientId, taskClientId, fileToUpload);
     }
   }
 
-  private uploadDirect(clientId: string, fileToUpload: File): void {
+  /**
+   * Executes a direct upload for a file that fits in a single Cloudinary part.
+   * Passes the processed file (or original) as `processedFile` so the queue
+   * service uses the correct size for the preflight and init calls.
+   */
+  private async uploadSinglePart(
+    clientId: string,
+    taskClientId: string,
+    fileToUpload: File,
+  ): Promise<void> {
     this.patchItem(clientId, {
       status: 'uploading',
       errorMessage: undefined,
@@ -1222,25 +453,35 @@ export class UploadsPageComponent {
       currentChunkIndex: 0,
     });
 
-    this.uploadService.uploadFile(fileToUpload).subscribe({
-      next: (response) => {
-        this.patchItem(clientId, {
-          status: 'uploaded',
-          uploadedMedia: response,
-          currentChunkIndex: null,
-        });
-      },
-      error: (err: HttpErrorResponse) => {
-        this.patchItem(clientId, {
-          status: 'uploadError',
-          errorMessage: uploadErrorMessage(err, fileToUpload.type),
-          currentChunkIndex: null,
-        });
-      },
-    });
+    try {
+      const completedTask = await this.uploadQueue.executeDirectUpload(taskClientId, {
+        processedFile: fileToUpload,
+      });
+
+      this.patchItem(clientId, {
+        status: 'uploaded',
+        uploadedMedia: completedTask.completedMedia ?? undefined,
+        currentChunkIndex: null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed. Please try again.';
+      this.patchItem(clientId, {
+        status: 'uploadError',
+        errorMessage: message,
+        currentChunkIndex: null,
+      });
+    }
   }
 
-  private async uploadChunked(clientId: string, fileToUpload: File): Promise<void> {
+  /**
+   * Splits the file into ≤95 MB chunks, then passes them as ordered
+   * UploadTaskPartInput[] to executeDirectUpload for sequential upload.
+   */
+  private async uploadChunked(
+    clientId: string,
+    taskClientId: string,
+    fileToUpload: File,
+  ): Promise<void> {
     this.patchItem(clientId, {
       status: 'splitting',
       errorMessage: undefined,
@@ -1249,30 +490,36 @@ export class UploadsPageComponent {
 
     let splitResult;
     try {
-      splitResult = this.videoProcessing.splitFile(fileToUpload);
+      splitResult = this.videoProcessing.splitFile(fileToUpload, DIRECT_UPLOAD_MAX_CHUNK_SIZE_BYTES);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to split file.';
       this.patchItem(clientId, { status: 'uploadError', errorMessage: message });
       return;
     }
 
+    const parts: UploadTaskPartInput[] = splitResult.chunks.map((chunk) => ({
+      file: chunk.file,
+      partIndex: chunk.partIndex,
+      totalParts: chunk.totalParts,
+      sizeBytes: chunk.sizeBytes,
+    }));
+
     this.patchItem(clientId, {
       status: 'uploading',
-      totalChunks: splitResult.chunks.length,
+      totalChunks: parts.length,
       currentChunkIndex: 0,
       chunkMediaId: splitResult.mediaId,
     });
 
     try {
-      const response = await this.uploadService.uploadChunked(splitResult, {}, (completedIndex) => {
-        this.patchItem(clientId, {
-          currentChunkIndex: completedIndex + 1,
-        });
+      const completedTask = await this.uploadQueue.executeDirectUpload(taskClientId, {
+        processedFile: fileToUpload,
+        parts,
       });
 
       this.patchItem(clientId, {
         status: 'uploaded',
-        uploadedMedia: response,
+        uploadedMedia: completedTask.completedMedia ?? undefined,
         currentChunkIndex: null,
       });
     } catch (err) {
@@ -1286,8 +533,13 @@ export class UploadsPageComponent {
   }
 
   private makeItem(file: File, status: UploadQueueStatus, errorMessage?: string): UploadQueueItem {
+    const clientId = crypto.randomUUID();
+
+    const task = this.uploadQueue.addFile(file);
+    this.taskClientIdMap.set(clientId, task.clientId);
+
     return {
-      clientId: crypto.randomUUID(),
+      clientId,
       filename: file.name,
       sizeBytes: file.size,
       mimeType: file.type,

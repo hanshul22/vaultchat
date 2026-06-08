@@ -26,11 +26,18 @@ export interface DirectUploadOptions {
 export type ChunkProgressCallback = (completedPartIndex: number, totalParts: number) => void;
 
 /**
- * Upload service — preflight + direct upload + sequential multipart upload.
+ * @deprecated This service still provides `checkPreflight()` which gallery-web
+ * calls before queuing uploads. The `uploadFile()` and `uploadChunked()` methods
+ * target the removed POST /api/v1/media/upload endpoint and must not be used;
+ * all binary uploads now go browser → Cloudinary via the direct-upload pipeline
+ * (UploadsApiService). This service should be refactored to expose only the
+ * preflight call, or merged into UploadsApiService, in a follow-up cleanup.
+ *
+ * Upload service — preflight + legacy binary upload (DEPRECATED).
  *
  * Calls:
  *   POST /api/v1/media/upload/preflight  — quota/MIME check without consuming storage
- *   POST /api/v1/media/upload            — single-part or per-chunk multipart upload
+ *   POST /api/v1/media/upload            — REMOVED; do not call uploadFile/uploadChunked
  *
  * Authentication is handled transparently by the shared auth interceptors
  * registered in app.config.ts.
